@@ -1,5 +1,6 @@
 ﻿from fastapi import FastAPI
 
+from app.routers.video_router import router as video_router
 from app.routers.violation_router import router as violation_router
 
 app = FastAPI(
@@ -9,6 +10,7 @@ app = FastAPI(
 )
 
 app.include_router(violation_router)
+app.include_router(video_router)
 
 
 @app.get("/health", tags=["Health"])
