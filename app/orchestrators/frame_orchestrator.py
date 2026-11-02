@@ -16,6 +16,7 @@ from app.agents.tracking_agent import (
 class FrameProcessingInput:
     frame: np.ndarray
     timestamp_seconds: float
+    frame_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class FrameOrchestrator:
             PlateInput(
                 frame=data.frame,
                 tracks=tracking_output.tracks,
+                frame_index=data.frame_index,
             )
         )
 
@@ -71,3 +73,7 @@ class FrameOrchestrator:
             speed_output=speed_output,
             plate_output=plate_output,
         )
+
+
+
+

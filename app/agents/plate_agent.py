@@ -14,6 +14,7 @@ from app.core.config import Settings, get_settings
 class PlateInput:
     frame: np.ndarray
     tracks: list[TrackedObject]
+    frame_index: int = 0
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,10 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             if ocr_client is not None
             else EasyOCRClient(languages=languages)
         )
+
+        self.ocr_frame_interval = self.settings.ocr_frame_interval
+        self._plate_cache: dict[int, str] = {}
+        self._last_frame_index: int | None = None
 
     @staticmethod
     def _crop_plate_region(
@@ -100,9 +105,43 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
         if data.frame.size == 0:
             raise ValueError("Frame cannot be empty.")
 
+        if (
+            self._last_frame_index is not None
+            and data.frame_index <= self._last_frame_index
+        ):
+            self._plate_cache.clear()
+
+        self._last_frame_index = data.frame_index
+
+        active_track_ids = {track.track_id for track in data.tracks}
+
+        self._plate_cache = {
+            track_id: plate_text
+            for track_id, plate_text in self._plate_cache.items()
+            if track_id in active_track_ids
+        }
+
+        should_run_ocr = (
+            data.frame_index % self.ocr_frame_interval == 0
+        )
+
         readings = []
 
         for track in data.tracks:
+            cached_plate = self._plate_cache.get(track.track_id)
+
+            if cached_plate is not None:
+                readings.append(
+                    PlateReading(
+                        track_id=track.track_id,
+                        plate_text=cached_plate,
+                    )
+                )
+                continue
+
+            if not should_run_ocr:
+                continue
+
             crop = self._crop_plate_region(data.frame, track.bbox)
 
             if crop is None:
@@ -120,6 +159,7 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
                 continue
 
             plate_text = max(valid_candidates, key=len)
+            self._plate_cache[track.track_id] = plate_text
 
             readings.append(
                 PlateReading(

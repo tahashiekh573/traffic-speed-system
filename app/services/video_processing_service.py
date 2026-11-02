@@ -62,6 +62,8 @@ class VideoProcessingService:
             total_frames = video.frame_count
             processed_frames = 0
 
+            frame_index = 0
+
             while True:
                 success, frame = video.read()
 
@@ -77,6 +79,7 @@ class VideoProcessingService:
                     FrameProcessingInput(
                         frame=frame,
                         timestamp_seconds=video.timestamp_seconds,
+                        frame_index=frame_index,
                     )
                 )
 
@@ -84,6 +87,7 @@ class VideoProcessingService:
                     on_frame_processed(output)
 
                 processed_frames += 1
+                frame_index += 1
 
         return VideoProcessingResult(
             video_path=str(Path(video_path)),
@@ -93,3 +97,5 @@ class VideoProcessingService:
             total_frames=total_frames,
             processed_frames=processed_frames,
         )
+
+

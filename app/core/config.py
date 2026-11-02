@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     # OCR Configuration
     ocr_languages: str = "en"
+    ocr_frame_interval: int = Field(default=10, ge=1)
 
     # Database
     database_url: str = "sqlite:///data/traffic.db"
@@ -94,3 +95,5 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return a cached application settings instance."""
     return Settings()
+
+
