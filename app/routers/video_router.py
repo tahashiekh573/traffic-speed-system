@@ -13,12 +13,14 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.repositories.violation_repository import ViolationRepository
 from app.schemas.video import (
+    PlateRecognitionResponse,
     VideoProcessingResponse,
     VideoProcessingStatusResponse,
 )
 from app.schemas.violation import ViolationResponse
 from app.services.video_processing_service import VideoProcessingService
 from app.services.video_progress_manager import video_progress_manager
+
 
 router = APIRouter(
     prefix="/api/v1/videos",
@@ -35,29 +37,42 @@ def process_video_background(
     video_path: Path,
     original_filename: str,
 ) -> None:
-    """Process video in a background thread and save annotated output."""
+    """Process uploaded video and generate annotated MP4."""
 
     db: Session = SessionLocal()
     output_path: Path | None = None
 
     try:
-        video_progress_manager.update(processing_id, status="processing")
+        video_progress_manager.update(
+            processing_id,
+            status="processing",
+        )
 
         settings = get_settings()
         repository = ViolationRepository(db)
 
-        output_dir = settings.resolve_path(Path("data/outputs"))
+        output_dir = settings.resolve_path(settings.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
         output_path = output_dir / f"{processing_id}.mp4"
 
+        # Store the latest plate for each vehicle.
         latest_plates: dict[int, str] = {}
+
+        # Store all uniquely recognized vehicle plates.
+        recognized_plates: dict[int, str] = {}
+
         saved_violations: list[ViolationResponse] = []
 
         def on_frame_processed(output) -> None:
+            # Collect recognized number plates.
             for reading in output.plate_output.readings:
                 latest_plates[reading.track_id] = reading.plate_text
+                recognized_plates[reading.track_id] = reading.plate_text
 
+            # Save overspeeding violations.
             for measurement in output.speed_output.measurements:
+
                 if not measurement.is_overspeeding:
                     continue
 
@@ -66,7 +81,9 @@ def process_video_background(
 
                 violation = repository.create(
                     track_id=measurement.track_id,
-                    plate_number=latest_plates.get(measurement.track_id),
+                    plate_number=latest_plates.get(
+                        measurement.track_id
+                    ),
                     speed_kmh=measurement.speed_kmh,
                     speed_limit_kmh=float(settings.speed_limit_kmh),
                     violation_time=datetime.utcnow(),
@@ -85,12 +102,22 @@ def process_video_background(
                 progress_percent=progress.progress_percent,
             )
 
+        # Process video and generate annotated output.
         result = VideoProcessingService().process_video(
             video_path,
             output_video_path=output_path,
             on_frame_processed=on_frame_processed,
             on_progress=on_progress,
         )
+
+        # Ensure output video was generated.
+        if (
+            not output_path.exists()
+            or output_path.stat().st_size == 0
+        ):
+            raise RuntimeError(
+                "Annotated output video was not generated."
+            )
 
         db.commit()
 
@@ -103,7 +130,22 @@ def process_video_background(
             processed_frames=result.processed_frames,
             violations_saved=len(saved_violations),
             violations=saved_violations,
-            output_video_url=f"/api/v1/videos/{processing_id}/output",
+
+            # Number plate recognition results.
+            plates_identified=len(recognized_plates),
+            recognized_plates=[
+                PlateRecognitionResponse(
+                    track_id=track_id,
+                    plate_number=plate_number,
+                )
+                for track_id, plate_number in sorted(
+                    recognized_plates.items()
+                )
+            ],
+
+            output_video_url=(
+                f"/api/v1/videos/{processing_id}/output"
+            ),
         )
 
         video_progress_manager.update(
@@ -161,15 +203,18 @@ def process_uploaded_video(
         )
 
     settings = get_settings()
+
     upload_dir = settings.resolve_path(Path("data/videos"))
     upload_dir.mkdir(parents=True, exist_ok=True)
 
     processing_id = uuid4().hex
     video_path = upload_dir / f"{processing_id}{extension}"
+
     total_bytes = 0
 
     try:
         with video_path.open("wb") as destination:
+
             while True:
                 chunk = file.file.read(UPLOAD_CHUNK_SIZE)
 
@@ -199,9 +244,14 @@ def process_uploaded_video(
 
         worker = Thread(
             target=process_video_background,
-            args=(processing_id, video_path, original_filename),
+            args=(
+                processing_id,
+                video_path,
+                original_filename,
+            ),
             daemon=True,
         )
+
         worker.start()
 
         job = video_progress_manager.get(processing_id)
@@ -238,7 +288,7 @@ def process_uploaded_video(
     response_model=VideoProcessingStatusResponse,
 )
 def get_video_processing_status(processing_id: str):
-    """Get progress and results for a processing job."""
+    """Get processing progress and final results."""
 
     job = video_progress_manager.get(processing_id)
 
@@ -262,7 +312,7 @@ def get_video_processing_status(processing_id: str):
 
 @router.get("/{processing_id}/output")
 def get_processed_video(processing_id: str):
-    """Return the annotated video for a completed job."""
+    """Return the generated annotated MP4 video."""
 
     job = video_progress_manager.get(processing_id)
 
@@ -279,13 +329,17 @@ def get_processed_video(processing_id: str):
         )
 
     settings = get_settings()
-    output_dir = settings.resolve_path(Path("data/outputs"))
+
+    output_dir = settings.resolve_path(settings.output_dir)
     output_path = output_dir / f"{processing_id}.mp4"
 
-    if not output_path.is_file():
+    if (
+        not output_path.is_file()
+        or output_path.stat().st_size == 0
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Processed video file not found.",
+            detail="Processed video file not found or empty.",
         )
 
     return FileResponse(

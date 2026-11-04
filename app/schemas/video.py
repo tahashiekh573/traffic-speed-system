@@ -1,9 +1,19 @@
 ﻿
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
 from app.schemas.violation import ViolationResponse
 
 
+class PlateRecognitionResponse(BaseModel):
+    """Recognized vehicle number plate details."""
+
+    track_id: int
+    plate_number: str
+
+
 class VideoProcessingResponse(BaseModel):
+    """Final video processing result."""
+
     filename: str
     fps: float
     width: int
@@ -12,10 +22,20 @@ class VideoProcessingResponse(BaseModel):
     processed_frames: int
     violations_saved: int
     violations: list[ViolationResponse]
+
+    # Number plate recognition results
+    plates_identified: int = 0
+    recognized_plates: list[PlateRecognitionResponse] = Field(
+        default_factory=list
+    )
+
+    # Annotated video URL
     output_video_url: str | None = None
 
 
 class VideoProcessingStatusResponse(BaseModel):
+    """Video processing status and final result."""
+
     processing_id: str
     filename: str
     status: str

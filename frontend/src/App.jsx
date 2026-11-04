@@ -173,17 +173,17 @@ function App() {
     }
   };
 
+  // Results received from backend.
   const violations = result?.violations || [];
+  const recognizedPlates = result?.recognized_plates || [];
 
-  const plates = [
-    ...new Set(
-      violations.map((item) => item.plate_number).filter(Boolean)
-    ),
-  ];
+  // Count all recognized vehicles, not only vehicles with violations.
+  const platesIdentified =
+    result?.plates_identified ?? recognizedPlates.length;
 
   const averageSpeed = violations.length
     ? (
-        violations.reduce((sum, item) => sum + item.speed_kmh, 0) /
+        violations.reduce((sum, item) => sum + Number(item.speed_kmh || 0), 0) /
         violations.length
       ).toFixed(1)
     : "—";
@@ -211,9 +211,9 @@ function App() {
     },
     {
       label: "Plates Identified",
-      value: result ? plates.length : "—",
+      value: result ? platesIdentified : "—",
       note: result
-        ? "Unique recognized plates in violations"
+        ? "Unique recognized vehicle plates"
         : "OCR results will appear here",
       icon: ScanLine,
       color: "cyan",
@@ -336,6 +336,7 @@ function App() {
           </motion.div>
         </section>
 
+        {/* Dashboard Statistics */}
         <section className="stats-grid">
           {stats.map((stat, index) => {
             const Icon = stat.icon;
@@ -365,6 +366,7 @@ function App() {
           })}
         </section>
 
+        {/* Main Workspace */}
         <section className="workspace-grid">
           <motion.div
             className="panel video-panel"
@@ -454,6 +456,7 @@ function App() {
               </div>
             )}
 
+            {/* Processing Progress */}
             {isProcessing && progress && (
               <div style={{
                 marginTop: 18,
@@ -622,6 +625,7 @@ function App() {
             </div>
           </motion.div>
 
+          {/* Analysis Overview */}
           <motion.div
             className="panel activity-panel"
             initial={{ opacity: 0, y: 20 }}
@@ -660,7 +664,7 @@ function App() {
                 {isProcessing
                   ? "The AI system is processing frames and checking traffic violations. This may take some time."
                   : result
-                    ? `${result.violations_saved} violations saved from ${result.processed_frames} processed frames.`
+                    ? `${result.violations_saved} violations saved from ${result.processed_frames} processed frames. ${platesIdentified} number plates recognized.`
                     : "Upload a video to view processing statistics, recognized plates, and traffic violations."}
               </p>
             </div>
@@ -682,6 +686,7 @@ function App() {
           </motion.div>
         </section>
 
+        {/* Detection Results */}
         <section className="panel results-panel">
           <div className="panel-heading">
             <div>
@@ -702,91 +707,188 @@ function App() {
               <span>
                 {isProcessing
                   ? "Results will appear here when the backend finishes processing."
-                  : "Your violation records and plate readings will appear here after analysis."}
-              </span>
-            </div>
-          ) : violations.length === 0 ? (
-            <div className="empty-results">
-              <div className="empty-icon"><CheckCircle2 size={24} /></div>
-              <strong>No violations found</strong>
-              <span>
-                {result.processed_frames} frames were processed and no overspeeding records were returned.
+                  : "Your plate readings and violation records will appear here after analysis."}
               </span>
             </div>
           ) : (
-            <div style={{ width: "100%", overflowX: "auto" }}>
-              <table style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                textAlign: "left",
-                fontSize: 13,
-                minWidth: 620
-              }}>
-                <thead>
-                  <tr style={{
-                    color: "#9ba9bd",
-                    borderBottom: "1px solid rgba(150,170,200,0.16)"
-                  }}>
-                    {[
-                      "Track ID",
-                      "Number Plate",
-                      "Vehicle Speed",
-                      "Speed Limit",
-                      "Violation Time"
-                    ].map((heading) => (
-                      <th
-                        key={heading}
-                        style={{
-                          padding: "14px 12px",
-                          fontWeight: 600
-                        }}
-                      >
-                        {heading}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
+            <>
+              {/* Recognized Number Plates */}
+              <div style={{ marginBottom: 28 }}>
+                <div className="panel-heading" style={{ marginBottom: 12 }}>
+                  <div>
+                    <div className="panel-title">
+                      <ScanLine size={17} /> Recognized Number Plates
+                    </div>
+                    <p>{platesIdentified} unique vehicle plates identified</p>
+                  </div>
+                  <span className="panel-tag">ANPR RESULTS</span>
+                </div>
 
-                <tbody>
-                  {violations.map((item, index) => (
-                    <tr
-                      key={item.id ?? index}
-                      style={{
-                        borderBottom: "1px solid rgba(150,170,200,0.10)"
-                      }}
-                    >
-                      <td style={{ padding: "14px 12px" }}>
-                        {item.track_id}
-                      </td>
+                {recognizedPlates.length === 0 ? (
+                  <div className="empty-results">
+                    <div className="empty-icon"><ScanLine size={24} /></div>
+                    <strong>No number plates recognized</strong>
+                    <span>
+                      Vehicles may have been detected, but OCR did not return
+                      any valid number plates.
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ width: "100%", overflowX: "auto" }}>
+                    <table style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      textAlign: "left",
+                      fontSize: 13,
+                      minWidth: 400
+                    }}>
+                      <thead>
+                        <tr style={{
+                          color: "#9ba9bd",
+                          borderBottom: "1px solid rgba(150,170,200,0.16)"
+                        }}>
+                          <th style={{ padding: "14px 12px" }}>Track ID</th>
+                          <th style={{ padding: "14px 12px" }}>Number Plate</th>
+                          <th style={{ padding: "14px 12px" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recognizedPlates.map((plate, index) => (
+                          <tr
+                            key={`${plate.track_id}-${index}`}
+                            style={{
+                              borderBottom: "1px solid rgba(150,170,200,0.10)"
+                            }}
+                          >
+                            <td style={{ padding: "14px 12px" }}>
+                              #{plate.track_id}
+                            </td>
+                            <td style={{
+                              padding: "14px 12px",
+                              fontWeight: 700,
+                              color: "#5ce0ad",
+                              letterSpacing: 1
+                            }}>
+                              {plate.plate_number}
+                            </td>
+                            <td style={{ padding: "14px 12px" }}>
+                              <span style={{ color: "#5ce0ad" }}>
+                                <CheckCircle2
+                                  size={14}
+                                  style={{
+                                    display: "inline",
+                                    verticalAlign: "middle",
+                                    marginRight: 5
+                                  }}
+                                />
+                                Recognized
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
 
-                      <td style={{
-                        padding: "14px 12px",
-                        fontWeight: 600
-                      }}>
-                        {item.plate_number || "Not recognized"}
-                      </td>
+              {/* Overspeeding Violations */}
+              <div>
+                <div className="panel-heading" style={{ marginBottom: 12 }}>
+                  <div>
+                    <div className="panel-title">
+                      <ShieldAlert size={17} /> Overspeeding Violations
+                    </div>
+                    <p>{violations.length} violation records saved</p>
+                  </div>
+                  <span className="panel-tag">VIOLATIONS</span>
+                </div>
 
-                      <td style={{
-                        padding: "14px 12px",
-                        color: "#ff8b8b"
-                      }}>
-                        {Number(item.speed_kmh).toFixed(1)} km/h
-                      </td>
+                {violations.length === 0 ? (
+                  <div className="empty-results">
+                    <div className="empty-icon"><CheckCircle2 size={24} /></div>
+                    <strong>No violations found</strong>
+                    <span>
+                      {result.processed_frames} frames were processed
+                      and no overspeeding records were returned.
+                    </span>
+                  </div>
+                ) : (
+                  <div style={{ width: "100%", overflowX: "auto" }}>
+                    <table style={{
+                      width: "100%",
+                      borderCollapse: "collapse",
+                      textAlign: "left",
+                      fontSize: 13,
+                      minWidth: 620
+                    }}>
+                      <thead>
+                        <tr style={{
+                          color: "#9ba9bd",
+                          borderBottom: "1px solid rgba(150,170,200,0.16)"
+                        }}>
+                          {[
+                            "Track ID",
+                            "Number Plate",
+                            "Vehicle Speed",
+                            "Speed Limit",
+                            "Violation Time"
+                          ].map((heading) => (
+                            <th
+                              key={heading}
+                              style={{
+                                padding: "14px 12px",
+                                fontWeight: 600
+                              }}
+                            >
+                              {heading}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {violations.map((item, index) => (
+                          <tr
+                            key={item.id ?? index}
+                            style={{
+                              borderBottom: "1px solid rgba(150,170,200,0.10)"
+                            }}
+                          >
+                            <td style={{ padding: "14px 12px" }}>
+                              {item.track_id}
+                            </td>
 
-                      <td style={{ padding: "14px 12px" }}>
-                        {Number(item.speed_limit_kmh).toFixed(1)} km/h
-                      </td>
+                            <td style={{
+                              padding: "14px 12px",
+                              fontWeight: 600
+                            }}>
+                              {item.plate_number || "Not recognized"}
+                            </td>
 
-                      <td style={{ padding: "14px 12px" }}>
-                        {item.violation_time
-                          ? new Date(item.violation_time).toLocaleString()
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                            <td style={{
+                              padding: "14px 12px",
+                              color: "#ff8b8b"
+                            }}>
+                              {Number(item.speed_kmh).toFixed(1)} km/h
+                            </td>
+
+                            <td style={{ padding: "14px 12px" }}>
+                              {Number(item.speed_limit_kmh).toFixed(1)} km/h
+                            </td>
+
+                            <td style={{ padding: "14px 12px" }}>
+                              {item.violation_time
+                                ? new Date(item.violation_time).toLocaleString()
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </section>
 

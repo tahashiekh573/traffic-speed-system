@@ -3,6 +3,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+import os
+import shutil
+import subprocess
 
 import cv2
 
@@ -34,7 +37,7 @@ class VideoProcessingProgress:
 
 
 class VideoProcessingService:
-    """Process videos, annotate vehicles and save output MP4."""
+    """Process videos, annotate vehicles and save browser-compatible MP4."""
 
     def __init__(
         self,
@@ -45,10 +48,81 @@ class VideoProcessingService:
         self.video_client_factory = video_client_factory or VideoClient
 
     @staticmethod
+    def find_ffmpeg() -> str:
+        """Find FFmpeg from PATH or the WinGet installation folder."""
+
+        ffmpeg = shutil.which("ffmpeg")
+
+        if ffmpeg:
+            return ffmpeg
+
+        local_app_data = os.environ.get("LOCALAPPDATA")
+
+        if local_app_data:
+            packages_dir = (
+                Path(local_app_data)
+                / "Microsoft"
+                / "WinGet"
+                / "Packages"
+            )
+
+            candidates = list(
+                packages_dir.glob(
+                    "Gyan.FFmpeg.Shared*/**/bin/ffmpeg.exe"
+                )
+            )
+
+            if candidates:
+                return str(candidates[0])
+
+        raise FileNotFoundError(
+            "FFmpeg not found. Please install FFmpeg or check its installation."
+        )
+
+    @staticmethod
+    def convert_to_h264(
+        temporary_path: Path,
+        final_path: Path,
+    ) -> None:
+        """Convert OpenCV MP4 output into browser-compatible H.264."""
+
+        ffmpeg = VideoProcessingService.find_ffmpeg()
+
+        command = [
+            ffmpeg,
+            "-y",
+            "-i", str(temporary_path),
+            "-map", "0:v:0",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            str(final_path),
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                "FFmpeg H.264 conversion failed:\n"
+                + result.stderr[-4000:]
+            )
+
+        if not final_path.exists() or final_path.stat().st_size == 0:
+            raise RuntimeError("H.264 output video was not created.")
+
+        temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
     def draw_annotations(frame, output, speed_states):
         settings = get_settings()
 
-        # Draw speed measurement lines
         line_1 = int(settings.line_1_y)
         line_2 = int(settings.line_2_y)
 
@@ -134,7 +208,17 @@ class VideoProcessingService:
 
         client = self.video_client_factory(video_path)
         writer = None
+
         output_path = Path(output_video_path) if output_video_path else None
+
+        temporary_path = (
+            output_path.with_name(
+                f"{output_path.stem}_opencv_temp.mp4"
+            )
+            if output_path
+            else None
+        )
+
         speed_states = {}
 
         try:
@@ -150,13 +234,13 @@ class VideoProcessingService:
                 processed_frames = 0
                 frame_index = 0
 
-                if output_path:
+                if output_path and temporary_path:
                     output_path.parent.mkdir(
                         parents=True, exist_ok=True
                     )
 
                     writer = cv2.VideoWriter(
-                        str(output_path),
+                        str(temporary_path),
                         cv2.VideoWriter_fourcc(*"mp4v"),
                         fps,
                         (width, height),
@@ -228,16 +312,21 @@ class VideoProcessingService:
                 if processed_frames == 0:
                     raise ValueError("No video frames were processed.")
 
-            return VideoProcessingResult(
-                video_path=str(Path(video_path)),
-                fps=fps,
-                width=width,
-                height=height,
-                total_frames=total_frames,
-                processed_frames=processed_frames,
-                output_video_path=str(output_path) if output_path else None,
-            )
-
         finally:
+            # Close OpenCV writer BEFORE FFmpeg reads the temporary file.
             if writer is not None:
                 writer.release()
+
+        # Convert only after all frames have been written and writer is closed.
+        if output_path and temporary_path:
+            self.convert_to_h264(temporary_path, output_path)
+
+        return VideoProcessingResult(
+            video_path=str(Path(video_path)),
+            fps=fps,
+            width=width,
+            height=height,
+            total_frames=total_frames,
+            processed_frames=processed_frames,
+            output_video_path=str(output_path) if output_path else None,
+        )
