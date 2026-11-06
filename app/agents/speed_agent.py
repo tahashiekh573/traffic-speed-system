@@ -1,4 +1,5 @@
-﻿from dataclasses import dataclass
+﻿
+from dataclasses import dataclass
 from math import isfinite
 
 from app.agents.base_agent import BaseAgent
@@ -30,11 +31,27 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
 
-        if self.settings.line_1_y == self.settings.line_2_y:
-            raise ValueError("Speed measurement lines must be different.")
+        line1 = float(self.settings.line_1_y)
+        line2 = float(self.settings.line_2_y)
 
-        self._previous_observations: dict[int, tuple[float, float]] = {}
-        self._line1_crossings: dict[int, float] = {}
+        if line1 == line2:
+            raise ValueError(
+                "Speed measurement lines must be different."
+            )
+
+        self._line_positions = {
+            1: line1,
+            2: line2,
+        }
+
+        self._previous_observations: dict[
+            int, tuple[float, float]
+        ] = {}
+
+        self._crossings: dict[
+            int, dict[int, float]
+        ] = {}
+
         self._completed_tracks: set[int] = set()
 
     @staticmethod
@@ -45,6 +62,8 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
         current_time: float,
         line_y: float,
     ) -> float | None:
+        """Interpolate the exact time when a vehicle crosses a line."""
+
         crossed = (
             previous_y < line_y <= current_y
             or previous_y > line_y >= current_y
@@ -56,15 +75,49 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
         if current_y == previous_y:
             return None
 
-        fraction = (line_y - previous_y) / (current_y - previous_y)
+        fraction = (
+            (line_y - previous_y)
+            / (current_y - previous_y)
+        )
 
-        return previous_time + fraction * (current_time - previous_time)
+        return previous_time + fraction * (
+            current_time - previous_time
+        )
+
+    def _calculate_speed(
+        self,
+        first_crossing: float,
+        second_crossing: float,
+    ) -> float | None:
+        """Calculate speed from the time between both lines."""
+
+        elapsed_seconds = abs(
+            second_crossing - first_crossing
+        )
+
+        if elapsed_seconds <= 0:
+            return None
+
+        distance_meters = float(
+            self.settings.real_distance_meters
+        )
+
+        speed_kmh = (
+            distance_meters / elapsed_seconds * 3.6
+        )
+
+        if not isfinite(speed_kmh) or speed_kmh <= 0:
+            return None
+
+        return speed_kmh
 
     def run(self, data: SpeedInput) -> SpeedOutput:
         timestamp = float(data.timestamp_seconds)
 
         if not isfinite(timestamp) or timestamp < 0:
-            raise ValueError("Timestamp must be finite and non-negative.")
+            raise ValueError(
+                "Timestamp must be finite and non-negative."
+            )
 
         measurements = []
 
@@ -79,7 +132,9 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
             if not isfinite(current_y):
                 continue
 
-            previous = self._previous_observations.get(track_id)
+            previous = self._previous_observations.get(
+                track_id
+            )
 
             if previous is None:
                 self._previous_observations[track_id] = (
@@ -95,56 +150,63 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
                     "Timestamps must increase for each tracked vehicle."
                 )
 
-            line1_time = self._crossing_time(
-                previous_y,
-                current_y,
-                previous_time,
-                timestamp,
-                float(self.settings.line_1_y),
+            # Detect crossings of both lines.
+            track_crossings = self._crossings.setdefault(
+                track_id,
+                {},
             )
 
-            line2_time = self._crossing_time(
-                previous_y,
-                current_y,
-                previous_time,
-                timestamp,
-                float(self.settings.line_2_y),
-            )
-
-            first_crossing = self._line1_crossings.get(track_id)
-
-            if line1_time is not None and first_crossing is None:
-                first_crossing = line1_time
-                self._line1_crossings[track_id] = first_crossing
-
-            if (
-                first_crossing is not None
-                and line2_time is not None
-                and line2_time > first_crossing
+            for line_number, line_y in (
+                self._line_positions.items()
             ):
-                elapsed_seconds = line2_time - first_crossing
-
-                speed_kmh = (
-                    float(self.settings.real_distance_meters)
-                    / elapsed_seconds
-                    * 3.6
+                crossing_time = self._crossing_time(
+                    previous_y=previous_y,
+                    current_y=current_y,
+                    previous_time=previous_time,
+                    current_time=timestamp,
+                    line_y=line_y,
                 )
 
-                measurements.append(
-                    SpeedMeasurement(
-                        track_id=track_id,
-                        speed_kmh=round(speed_kmh, 2),
-                        is_overspeeding=(
-                            speed_kmh > float(self.settings.speed_limit_kmh)
-                        ),
+                if (
+                    crossing_time is not None
+                    and line_number not in track_crossings
+                ):
+                    track_crossings[line_number] = (
+                        crossing_time
                     )
+
+            # Calculate speed after both lines are crossed.
+            if (
+                1 in track_crossings
+                and 2 in track_crossings
+            ):
+                speed_kmh = self._calculate_speed(
+                    track_crossings[1],
+                    track_crossings[2],
                 )
 
-                self._completed_tracks.add(track_id)
+                if speed_kmh is not None:
+                    speed_limit = float(
+                        self.settings.speed_limit_kmh
+                    )
+
+                    measurements.append(
+                        SpeedMeasurement(
+                            track_id=track_id,
+                            speed_kmh=round(speed_kmh, 2),
+                            is_overspeeding=(
+                                speed_kmh > speed_limit
+                            ),
+                        )
+                    )
+
+                    self._completed_tracks.add(track_id)
 
             self._previous_observations[track_id] = (
                 current_y,
                 timestamp,
             )
 
-        return SpeedOutput(measurements=measurements)
+        return SpeedOutput(
+            measurements=measurements
+        )

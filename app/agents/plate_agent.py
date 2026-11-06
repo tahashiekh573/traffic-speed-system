@@ -1,6 +1,9 @@
-﻿import re
+﻿
+import re
+from collections import Counter
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from app.agents.base_agent import BaseAgent
@@ -29,7 +32,7 @@ class PlateOutput:
 
 
 class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
-    """Read vehicle number plates using an OCR client."""
+    """Lightweight vehicle number plate OCR agent."""
 
     def __init__(
         self,
@@ -50,8 +53,17 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             else EasyOCRClient(languages=languages)
         )
 
-        self.ocr_frame_interval = self.settings.ocr_frame_interval
+        # Run OCR at most once every configured interval.
+        self.ocr_frame_interval = max(
+            1,
+            int(self.settings.ocr_frame_interval),
+        )
+
+        # Accept a valid plate after one OCR observation.
+        self.minimum_votes = 1
+
         self._plate_cache: dict[int, str] = {}
+        self._candidate_votes: dict[int, Counter] = {}
         self._last_frame_index: int | None = None
 
     @staticmethod
@@ -59,7 +71,6 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
         frame: np.ndarray,
         bbox: tuple[float, float, float, float],
     ) -> np.ndarray | None:
-        """Crop the lower portion of a vehicle bounding box."""
 
         frame_height, frame_width = frame.shape[:2]
         x1, y1, x2, y2 = bbox
@@ -75,10 +86,11 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
         if width <= 0 or height <= 0:
             return None
 
-        margin_x = int(width * 0.05)
+        margin_x = int(width * 0.03)
+
         crop_x1 = x1 + margin_x
         crop_x2 = x2 - margin_x
-        crop_y1 = y1 + int(height * 0.45)
+        crop_y1 = y1 + int(height * 0.50)
 
         crop = frame[crop_y1:y2, crop_x1:crop_x2]
 
@@ -88,17 +100,62 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
         return crop
 
     @staticmethod
+    def _enhance_crop(crop: np.ndarray) -> np.ndarray | None:
+        """Create one enhanced image for faster OCR."""
+
+        if crop is None or crop.size == 0:
+            return None
+
+        height, width = crop.shape[:2]
+
+        if height < 2 or width < 2:
+            return None
+
+        enlarged = cv2.resize(
+            crop,
+            None,
+            fx=2,
+            fy=2,
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+        if len(enlarged.shape) == 3:
+            gray = cv2.cvtColor(
+                enlarged,
+                cv2.COLOR_BGR2GRAY,
+            )
+        else:
+            gray = enlarged.copy()
+
+        clahe = cv2.createCLAHE(
+            clipLimit=2.0,
+            tileGridSize=(8, 8),
+        )
+
+        return clahe.apply(gray)
+
+    @staticmethod
     def _normalize_plate(text: str) -> str | None:
-        """Normalize and validate an OCR text candidate."""
 
-        normalized = re.sub(r"[^A-Z0-9]", "", text.upper())
+        normalized = re.sub(
+            r"[^A-Z0-9]",
+            "",
+            text.upper(),
+        )
 
-        if re.fullmatch(r"[A-Z0-9]{4,12}", normalized):
-            return normalized
+        if not re.fullmatch(r"[A-Z0-9]{4,12}", normalized):
+            return None
 
-        return None
+        if not any(char.isalpha() for char in normalized):
+            return None
+
+        if not any(char.isdigit() for char in normalized):
+            return None
+
+        return normalized
 
     def run(self, data: PlateInput) -> PlateOutput:
+
         if not isinstance(data.frame, np.ndarray):
             raise TypeError("Frame must be a NumPy array.")
 
@@ -110,14 +167,23 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             and data.frame_index <= self._last_frame_index
         ):
             self._plate_cache.clear()
+            self._candidate_votes.clear()
 
         self._last_frame_index = data.frame_index
 
-        active_track_ids = {track.track_id for track in data.tracks}
+        active_track_ids = {
+            track.track_id for track in data.tracks
+        }
 
         self._plate_cache = {
-            track_id: plate_text
-            for track_id, plate_text in self._plate_cache.items()
+            track_id: plate
+            for track_id, plate in self._plate_cache.items()
+            if track_id in active_track_ids
+        }
+
+        self._candidate_votes = {
+            track_id: votes
+            for track_id, votes in self._candidate_votes.items()
             if track_id in active_track_ids
         }
 
@@ -128,12 +194,15 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
         readings = []
 
         for track in data.tracks:
-            cached_plate = self._plate_cache.get(track.track_id)
+
+            track_id = track.track_id
+
+            cached_plate = self._plate_cache.get(track_id)
 
             if cached_plate is not None:
                 readings.append(
                     PlateReading(
-                        track_id=track.track_id,
+                        track_id=track_id,
                         plate_text=cached_plate,
                     )
                 )
@@ -142,30 +211,59 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             if not should_run_ocr:
                 continue
 
-            crop = self._crop_plate_region(data.frame, track.bbox)
+            crop = self._crop_plate_region(
+                data.frame,
+                track.bbox,
+            )
 
             if crop is None:
                 continue
 
-            candidates = self.ocr_client.read_text(crop)
+            enhanced = self._enhance_crop(crop)
 
-            valid_candidates = [
+            if enhanced is None:
+                continue
+
+            try:
+                candidates = self.ocr_client.read_text(enhanced)
+            except Exception:
+                continue
+
+            valid_candidates = {
                 plate
                 for candidate in candidates
-                if (plate := self._normalize_plate(candidate)) is not None
-            ]
+                if (
+                    plate := self._normalize_plate(candidate)
+                ) is not None
+            }
 
             if not valid_candidates:
                 continue
 
-            plate_text = max(valid_candidates, key=len)
-            self._plate_cache[track.track_id] = plate_text
-
-            readings.append(
-                PlateReading(
-                    track_id=track.track_id,
-                    plate_text=plate_text,
-                )
+            votes = self._candidate_votes.setdefault(
+                track_id,
+                Counter(),
             )
+
+            for plate in valid_candidates:
+                votes[plate] += 1
+
+            best_plate, best_votes = max(
+                votes.items(),
+                key=lambda item: (
+                    item[1],
+                    len(item[0]),
+                ),
+            )
+
+            if best_votes >= self.minimum_votes:
+                self._plate_cache[track_id] = best_plate
+
+                readings.append(
+                    PlateReading(
+                        track_id=track_id,
+                        plate_text=best_plate,
+                    )
+                )
 
         return PlateOutput(readings=readings)

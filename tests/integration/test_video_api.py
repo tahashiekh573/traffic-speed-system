@@ -1,4 +1,5 @@
-﻿from types import SimpleNamespace
+﻿from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -41,6 +42,7 @@ def client():
 
     try:
         with TestClient(app) as test_client:
+            test_client.testing_session_local = testing_session_local
             yield test_client
     finally:
         app.dependency_overrides.pop(get_db, None)
@@ -51,9 +53,11 @@ def client():
 def configure_upload_directory(monkeypatch, tmp_path):
     settings = SimpleNamespace(
         resolve_path=lambda path: tmp_path / path,
+        output_dir=Path("data/processed"),
         speed_limit_kmh=60.0,
     )
     monkeypatch.setattr(video_router, "get_settings", lambda: settings)
+
     return tmp_path / "data" / "videos"
 
 
@@ -64,8 +68,32 @@ def test_video_upload_processes_video_and_saves_violation(
 ):
     upload_dir = configure_upload_directory(monkeypatch, tmp_path)
 
+    # Background thread ko test ke andar synchronously run karo.
+    class ImmediateThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target = target
+            self.args = args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(video_router, "Thread", ImmediateThread)
+
+    # Background worker ko test database use karwao.
+    monkeypatch.setattr(
+        video_router,
+        "SessionLocal",
+        client.testing_session_local,
+    )
+
     class FakeVideoProcessingService:
-        def process_video(self, video_path, on_frame_processed=None):
+        def process_video(
+            self,
+            video_path,
+            output_video_path=None,
+            on_frame_processed=None,
+            on_progress=None,
+        ):
             output = SimpleNamespace(
                 plate_output=SimpleNamespace(
                     readings=[
@@ -86,7 +114,15 @@ def test_video_upload_processes_video_and_saves_violation(
                 ),
             )
 
-            on_frame_processed(output)
+            if on_frame_processed:
+                on_frame_processed(output)
+
+            if output_video_path is not None:
+                output_video_path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+                output_video_path.write_bytes(b"fake-annotated-video")
 
             return VideoProcessingResult(
                 video_path=str(video_path),
@@ -114,9 +150,22 @@ def test_video_upload_processes_video_and_saves_violation(
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
 
-    result = response.json()
+    upload_result = response.json()
+    processing_id = upload_result["processing_id"]
+
+    status_response = client.get(
+        f"/api/v1/videos/{processing_id}/status"
+    )
+
+    assert status_response.status_code == 200
+
+    status_result = status_response.json()
+
+    assert status_result["status"] == "completed"
+
+    result = status_result["result"]
 
     assert result["filename"] == "traffic.mp4"
     assert result["fps"] == 30.0
@@ -128,11 +177,19 @@ def test_video_upload_processes_video_and_saves_violation(
     assert result["violations"][0]["track_id"] == 7
     assert result["violations"][0]["plate_number"] == "ABC123"
     assert result["violations"][0]["speed_kmh"] == 85.0
+    assert result["plates_identified"] == 1
+    assert result["recognized_plates"][0]["plate_number"] == "ABC123"
 
     saved_response = client.get("/api/v1/violations")
 
     assert saved_response.status_code == 200
     assert saved_response.json()["total"] == 1
+
+    output_response = client.get(
+        f"/api/v1/videos/{processing_id}/output"
+    )
+
+    assert output_response.status_code == 200
 
     assert list(upload_dir.iterdir()) == []
 
@@ -180,7 +237,11 @@ def test_video_upload_rejects_file_exceeding_size_limit(
     tmp_path,
 ):
     upload_dir = configure_upload_directory(monkeypatch, tmp_path)
-    monkeypatch.setattr(video_router, "MAX_UPLOAD_SIZE_BYTES", 3)
+    monkeypatch.setattr(
+        video_router,
+        "MAX_UPLOAD_SIZE_BYTES",
+        3,
+    )
 
     response = client.post(
         "/api/v1/videos/process",

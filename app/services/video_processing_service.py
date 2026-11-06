@@ -49,7 +49,7 @@ class VideoProcessingService:
 
     @staticmethod
     def find_ffmpeg() -> str:
-        """Find FFmpeg from PATH or the WinGet installation folder."""
+        """Find FFmpeg from PATH or WinGet installation."""
 
         ffmpeg = shutil.which("ffmpeg")
 
@@ -76,7 +76,7 @@ class VideoProcessingService:
                 return str(candidates[0])
 
         raise FileNotFoundError(
-            "FFmpeg not found. Please install FFmpeg or check its installation."
+            "FFmpeg not found. Please install FFmpeg."
         )
 
     @staticmethod
@@ -84,29 +84,49 @@ class VideoProcessingService:
         temporary_path: Path,
         final_path: Path,
     ) -> None:
-        """Convert OpenCV MP4 output into browser-compatible H.264."""
+        """Convert OpenCV output to browser-compatible H.264."""
 
         ffmpeg = VideoProcessingService.find_ffmpeg()
+
+        final_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        if final_path.exists():
+            final_path.unlink()
 
         command = [
             ffmpeg,
             "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-threads", "0",
             "-i", str(temporary_path),
             "-map", "0:v:0",
+            "-an",
             "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
+            "-preset", "ultrafast",
+            "-crf", "26",
+            "-threads", "0",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
             str(final_path),
         ]
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                "FFmpeg conversion exceeded 30 minutes. "
+                "Try a lower-resolution input video."
+            ) from exc
 
         if result.returncode != 0:
             raise RuntimeError(
@@ -114,10 +134,24 @@ class VideoProcessingService:
                 + result.stderr[-4000:]
             )
 
-        if not final_path.exists() or final_path.stat().st_size == 0:
-            raise RuntimeError("H.264 output video was not created.")
+        if (
+            not final_path.exists()
+            or final_path.stat().st_size == 0
+        ):
+            raise RuntimeError(
+                "H.264 output video was not created."
+            )
 
         temporary_path.unlink(missing_ok=True)
+
+    @staticmethod
+    def _get_value(obj, key, default=None):
+        """Read a value from either a dictionary or an object."""
+
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+
+        return getattr(obj, key, default)
 
     @staticmethod
     def draw_annotations(frame, output, speed_states):
@@ -127,38 +161,97 @@ class VideoProcessingService:
         line_2 = int(settings.line_2_y)
 
         cv2.line(
-            frame, (0, line_1), (frame.shape[1], line_1),
-            (255, 255, 0), 2
+            frame,
+            (0, line_1),
+            (frame.shape[1], line_1),
+            (255, 255, 0),
+            2,
         )
+
         cv2.line(
-            frame, (0, line_2), (frame.shape[1], line_2),
-            (0, 255, 255), 2
+            frame,
+            (0, line_2),
+            (frame.shape[1], line_2),
+            (0, 255, 255),
+            2,
         )
 
         cv2.putText(
-            frame, "SPEED LINE 1", (10, max(20, line_1 - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2
+            frame,
+            "SPEED LINE 1",
+            (10, max(20, line_1 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 0),
+            2,
         )
+
         cv2.putText(
-            frame, "SPEED LINE 2", (10, max(20, line_2 - 10)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2
+            frame,
+            "SPEED LINE 2",
+            (10, max(20, line_2 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
         )
 
-        for track in output.tracks:
-            x1, y1, x2, y2 = map(int, track.bbox)
+        tracks = VideoProcessingService._get_value(
+            output,
+            "tracks",
+            [],
+        )
 
-            state = speed_states.get(track.track_id, {})
+        for track in tracks or []:
+            bbox = VideoProcessingService._get_value(
+                track,
+                "bbox",
+            )
+
+            if bbox is None or len(bbox) != 4:
+                continue
+
+            x1, y1, x2, y2 = map(int, bbox)
+
+            track_id = VideoProcessingService._get_value(
+                track,
+                "track_id",
+            )
+
+            state = speed_states.get(track_id, {})
             overspeed = state.get("overspeed", False)
             speed = state.get("speed")
 
-            color = (0, 0, 255) if overspeed else (0, 220, 100)
+            color = (
+                (0, 0, 255)
+                if overspeed
+                else (0, 220, 100)
+            )
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(
+                frame,
+                (x1, y1),
+                (x2, y2),
+                color,
+                2,
+            )
+
+            class_name = VideoProcessingService._get_value(
+                track,
+                "class_name",
+                "VEHICLE",
+            )
+
+            confidence = VideoProcessingService._get_value(
+                track,
+                "confidence",
+                0.0,
+            )
 
             label = (
-                f"{track.class_name.upper()} "
-                f"ID:{track.track_id} "
-                f"{track.confidence:.2f}"
+                f"{str(class_name).upper()} "
+                f"ID:{track_id} "
+                f"{float(confidence):.2f}"
             )
 
             if speed is not None:
@@ -171,11 +264,19 @@ class VideoProcessingService:
             scale = 0.55
             thickness = 2
 
-            (text_width, text_height), baseline = cv2.getTextSize(
-                label, font, scale, thickness
+            (text_width, text_height), baseline = (
+                cv2.getTextSize(
+                    label,
+                    font,
+                    scale,
+                    thickness,
+                )
             )
 
-            top = max(0, y1 - text_height - baseline - 8)
+            top = max(
+                0,
+                y1 - text_height - baseline - 8,
+            )
 
             cv2.rectangle(
                 frame,
@@ -188,7 +289,10 @@ class VideoProcessingService:
             cv2.putText(
                 frame,
                 label,
-                (x1 + 4, max(text_height, y1 - baseline - 4)),
+                (
+                    x1 + 4,
+                    max(text_height, y1 - baseline - 4),
+                ),
                 font,
                 scale,
                 (255, 255, 255),
@@ -209,7 +313,11 @@ class VideoProcessingService:
         client = self.video_client_factory(video_path)
         writer = None
 
-        output_path = Path(output_video_path) if output_video_path else None
+        output_path = (
+            Path(output_video_path)
+            if output_video_path
+            else None
+        )
 
         temporary_path = (
             output_path.with_name(
@@ -226,17 +334,21 @@ class VideoProcessingService:
                 fps = video.fps
 
                 if not isfinite(fps) or fps <= 0:
-                    raise ValueError("Video FPS must be positive.")
+                    raise ValueError(
+                        "Video FPS must be positive."
+                    )
 
                 width = video.width
                 height = video.height
                 total_frames = video.frame_count
+
                 processed_frames = 0
                 frame_index = 0
 
                 if output_path and temporary_path:
                     output_path.parent.mkdir(
-                        parents=True, exist_ok=True
+                        parents=True,
+                        exist_ok=True,
                     )
 
                     writer = cv2.VideoWriter(
@@ -254,7 +366,10 @@ class VideoProcessingService:
                 if on_progress:
                     on_progress(
                         VideoProcessingProgress(
-                            0, total_frames, 0.0, "processing"
+                            0,
+                            total_frames,
+                            0.0,
+                            "processing",
                         )
                     )
 
@@ -265,7 +380,9 @@ class VideoProcessingService:
                         break
 
                     if frame is None:
-                        raise RuntimeError("Empty video frame.")
+                        raise RuntimeError(
+                            "Empty video frame."
+                        )
 
                     output = self.orchestrator.process_frame(
                         FrameProcessingInput(
@@ -275,14 +392,43 @@ class VideoProcessingService:
                         )
                     )
 
-                    for measurement in output.speed_output.measurements:
-                        speed_states[measurement.track_id] = {
-                            "speed": measurement.speed_kmh,
-                            "overspeed": measurement.is_overspeeding,
+                    speed_output = self._get_value(
+                        output,
+                        "speed_output",
+                    )
+
+                    measurements = self._get_value(
+                        speed_output,
+                        "measurements",
+                        [],
+                    )
+
+                    for measurement in measurements or []:
+                        track_id = self._get_value(
+                            measurement,
+                            "track_id",
+                        )
+
+                        speed = self._get_value(
+                            measurement,
+                            "speed_kmh",
+                        )
+
+                        overspeed = self._get_value(
+                            measurement,
+                            "is_overspeeding",
+                            False,
+                        )
+
+                        speed_states[track_id] = {
+                            "speed": speed,
+                            "overspeed": overspeed,
                         }
 
                     annotated_frame = self.draw_annotations(
-                        frame.copy(), output, speed_states
+                        frame.copy(),
+                        output,
+                        speed_states,
                     )
 
                     if writer is not None:
@@ -296,8 +442,12 @@ class VideoProcessingService:
 
                     if on_progress:
                         percentage = (
-                            min(processed_frames / total_frames * 100, 100)
-                            if total_frames > 0 else 0.0
+                            min(
+                                processed_frames / total_frames * 100,
+                                100,
+                            )
+                            if total_frames > 0
+                            else 0.0
                         )
 
                         on_progress(
@@ -310,16 +460,19 @@ class VideoProcessingService:
                         )
 
                 if processed_frames == 0:
-                    raise ValueError("No video frames were processed.")
+                    raise ValueError(
+                        "No video frames were processed."
+                    )
 
         finally:
-            # Close OpenCV writer BEFORE FFmpeg reads the temporary file.
             if writer is not None:
                 writer.release()
 
-        # Convert only after all frames have been written and writer is closed.
         if output_path and temporary_path:
-            self.convert_to_h264(temporary_path, output_path)
+            self.convert_to_h264(
+                temporary_path,
+                output_path,
+            )
 
         return VideoProcessingResult(
             video_path=str(Path(video_path)),
@@ -328,5 +481,9 @@ class VideoProcessingService:
             height=height,
             total_frames=total_frames,
             processed_frames=processed_frames,
-            output_video_path=str(output_path) if output_path else None,
+            output_video_path=(
+                str(output_path)
+                if output_path
+                else None
+            ),
         )
