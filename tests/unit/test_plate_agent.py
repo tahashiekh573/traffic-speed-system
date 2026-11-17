@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 
 from app.agents.plate_agent import PlateAgent, PlateInput
 from app.agents.tracking_agent import TrackedObject

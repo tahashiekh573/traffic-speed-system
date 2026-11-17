@@ -1,18 +1,26 @@
-﻿from dataclasses import dataclass
+"""Vehicle tracking agent built on YOLOv8 + ByteTrack."""
+
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
 from app.agents.base_agent import BaseAgent
 from app.clients.yolo_detector_client import YOLODetectorClient
+from app.core.config import Settings, get_settings
 
 
 @dataclass(frozen=True)
 class TrackingInput:
+    """A single frame to track vehicles in."""
+
     frame: np.ndarray
 
 
 @dataclass(frozen=True)
 class TrackedObject:
+    """A vehicle with a persistent ByteTrack identifier."""
+
     track_id: int
     bbox: tuple[float, float, float, float]
     confidence: float
@@ -22,18 +30,32 @@ class TrackedObject:
 
 @dataclass(frozen=True)
 class TrackingOutput:
+    """All vehicles tracked in a frame."""
+
     tracks: list[TrackedObject]
 
 
 class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
     """Track vehicles across consecutive frames using ByteTrack."""
 
-    def __init__(self, detector: YOLODetectorClient | None = None):
-        self.detector = detector or YOLODetectorClient()
+    def __init__(
+        self,
+        detector: YOLODetectorClient | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        self.settings = settings or get_settings()
+        self.detector = detector or YOLODetectorClient(self.settings)
         self.model = self.detector.model
+        self.vehicle_classes = self.settings.vehicle_class_names
+        self.confidence_threshold = getattr(
+            self.detector,
+            "confidence_threshold",
+            self.settings.confidence_threshold,
+        )
 
     @staticmethod
-    def _to_list(value):
+    def _to_list(value: Any) -> list:
+        """Convert tensors / arrays to plain Python lists."""
         if value is None:
             return []
 
@@ -46,6 +68,7 @@ class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
         return value
 
     def run(self, data: TrackingInput) -> TrackingOutput:
+        """Track vehicles in the frame and drop non-vehicle classes."""
         if not isinstance(data.frame, np.ndarray):
             raise TypeError("Frame must be a NumPy array.")
 
@@ -56,6 +79,7 @@ class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
             source=data.frame,
             persist=True,
             tracker="bytetrack.yaml",
+            conf=self.confidence_threshold,
             verbose=False,
         )
 
@@ -67,22 +91,24 @@ class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
         if boxes is None or boxes.id is None:
             return TrackingOutput(tracks=[])
 
-        coordinates = self._to_list(boxes.xyxy)
-        confidences = self._to_list(boxes.conf)
-        class_ids = self._to_list(boxes.cls)
-        track_ids = self._to_list(boxes.id)
-
         names = results[0].names
-        tracks = []
+        tracks: list[TrackedObject] = []
 
         for bbox, confidence, class_id, track_id in zip(
-            coordinates,
-            confidences,
-            class_ids,
-            track_ids,
+            self._to_list(boxes.xyxy),
+            self._to_list(boxes.conf),
+            self._to_list(boxes.cls),
+            self._to_list(boxes.id),
             strict=False,
         ):
             class_id = int(class_id)
+            class_name = str(names[class_id])
+
+            if (
+                self.vehicle_classes
+                and class_name.lower() not in self.vehicle_classes
+            ):
+                continue
 
             tracks.append(
                 TrackedObject(
@@ -90,9 +116,8 @@ class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
                     bbox=tuple(float(value) for value in bbox),
                     confidence=float(confidence),
                     class_id=class_id,
-                    class_name=names[class_id],
+                    class_name=class_name,
                 )
             )
 
         return TrackingOutput(tracks=tracks)
-

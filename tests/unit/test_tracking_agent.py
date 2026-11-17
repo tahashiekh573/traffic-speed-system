@@ -1,4 +1,4 @@
-﻿from types import SimpleNamespace
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -69,3 +69,27 @@ def test_tracking_agent_returns_empty_when_no_track_ids():
     output = agent.run(TrackingInput(frame=frame))
 
     assert output.tracks == []
+
+
+def test_tracking_agent_ignores_non_vehicle_classes():
+    frame = np.zeros((640, 640, 3), dtype=np.uint8)
+
+    class MixedModel:
+        def track(self, **kwargs):
+            boxes = SimpleNamespace(
+                xyxy=np.array([[0, 0, 10, 10], [5, 5, 50, 50]]),
+                conf=np.array([0.9, 0.8]),
+                cls=np.array([0, 2]),
+                id=np.array([1, 2]),
+            )
+            return [SimpleNamespace(boxes=boxes, names={0: "person", 2: "car"})]
+
+    class MixedDetector:
+        model = MixedModel()
+
+    agent = TrackingAgent(detector=MixedDetector())
+
+    output = agent.run(TrackingInput(frame=frame))
+
+    assert [track.track_id for track in output.tracks] == [2]
+    assert output.tracks[0].class_name == "car"

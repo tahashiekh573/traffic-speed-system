@@ -1,4 +1,4 @@
-﻿import numpy as np
+import numpy as np
 import pytest
 
 from app.services.video_processing_service import VideoProcessingService

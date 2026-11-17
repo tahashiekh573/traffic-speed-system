@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from unittest.mock import Mock
 
 from app.schemas.violation import ViolationCreate

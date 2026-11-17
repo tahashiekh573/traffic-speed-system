@@ -1,4 +1,3 @@
-﻿
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -11,6 +10,9 @@ from app.agents.tracking_agent import TrackedObject
 from app.clients.easyocr_client import EasyOCRClient
 from app.clients.ocr_client import OCRClient
 from app.core.config import Settings, get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -41,16 +43,14 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
     ) -> None:
         self.settings = settings or get_settings()
 
-        languages = [
-            language.strip()
-            for language in self.settings.ocr_languages.split(",")
-            if language.strip()
-        ]
-
         self.ocr_client = (
             ocr_client
             if ocr_client is not None
-            else EasyOCRClient(languages=languages)
+            else EasyOCRClient(
+                languages=self.settings.ocr_language_list,
+                min_confidence=self.settings.ocr_min_confidence,
+                use_gpu=self.settings.ocr_use_gpu,
+            )
         )
 
         # Run OCR at most once every configured interval.
@@ -226,7 +226,10 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
 
             try:
                 candidates = self.ocr_client.read_text(enhanced)
-            except Exception:
+            except Exception as exc:  # OCR failures must not stop the video.
+                logger.warning(
+                    "OCR failed for track %s: %s", track_id, exc
+                )
                 continue
 
             valid_candidates = {

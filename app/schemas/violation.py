@@ -1,6 +1,13 @@
-﻿from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Mark naive database timestamps as UTC so clients convert correctly."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 class ViolationCreate(BaseModel):
@@ -27,6 +34,12 @@ class ViolationResponse(BaseModel):
     violation_time: datetime
     video_source: str | None
 
+    @field_validator("violation_time")
+    @classmethod
+    def ensure_utc(cls, value: datetime) -> datetime:
+        """Serialize violation times with an explicit UTC offset."""
+        return _as_utc(value)
+
 
 class ViolationListResponse(BaseModel):
     """Represent a paginated list of violations."""
@@ -35,3 +48,20 @@ class ViolationListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ViolationStatisticsResponse(BaseModel):
+    """Aggregate figures across all stored violations."""
+
+    total_violations: int
+    average_speed_kmh: float | None
+    max_speed_kmh: float | None
+    violations_with_plate: int
+    videos_analyzed: int
+    latest_violation_time: datetime | None
+
+    @field_validator("latest_violation_time")
+    @classmethod
+    def ensure_utc(cls, value: datetime | None) -> datetime | None:
+        """Serialize the latest time with an explicit UTC offset."""
+        return _as_utc(value)

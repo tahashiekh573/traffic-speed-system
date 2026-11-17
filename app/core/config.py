@@ -1,4 +1,4 @@
-﻿from functools import lru_cache
+from functools import lru_cache
 from pathlib import Path
 
 from pydantic import Field, PositiveFloat, field_validator
@@ -27,9 +27,25 @@ class Settings(BaseSettings):
     line_2_y: int = Field(default=500, ge=0)
     real_distance_meters: PositiveFloat = 10.0
 
+    # Tracking Configuration
+    vehicle_classes: str = "car,motorcycle,bus,truck"
+
     # OCR Configuration
     ocr_languages: str = "en"
     ocr_frame_interval: int = Field(default=10, ge=1)
+    ocr_min_confidence: float = Field(default=0.25, ge=0.0, le=1.0)
+    ocr_use_gpu: bool = False
+
+    # Video Upload
+    upload_dir: Path = Path("data/videos")
+    max_upload_size_mb: int = Field(default=500, gt=0)
+    allowed_video_extensions: str = ".mp4,.avi,.mov,.mkv"
+
+    # API
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # Built dashboard served by FastAPI (npm run build -> frontend/dist)
+    frontend_dist_dir: Path = Path("frontend/dist")
 
     # Database
     database_url: str = "sqlite:///data/traffic.db"
@@ -73,6 +89,39 @@ class Settings(BaseSettings):
 
         return value
 
+    @staticmethod
+    def _split_csv(value: str) -> list[str]:
+        """Split a comma separated environment value into clean items."""
+        return [item.strip() for item in value.split(",") if item.strip()]
+
+    @property
+    def vehicle_class_names(self) -> set[str]:
+        """Return the lowercase vehicle class names to track."""
+        return {name.lower() for name in self._split_csv(self.vehicle_classes)}
+
+    @property
+    def ocr_language_list(self) -> list[str]:
+        """Return the configured EasyOCR languages."""
+        return self._split_csv(self.ocr_languages) or ["en"]
+
+    @property
+    def video_extensions(self) -> set[str]:
+        """Return the accepted upload extensions in lowercase."""
+        return {
+            ext.lower() if ext.startswith(".") else f".{ext.lower()}"
+            for ext in self._split_csv(self.allowed_video_extensions)
+        }
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """Return the allowed CORS origins."""
+        return self._split_csv(self.cors_origins)
+
+    @property
+    def max_upload_size_bytes(self) -> int:
+        """Return the upload limit in bytes."""
+        return self.max_upload_size_mb * 1024 * 1024
+
     def resolve_path(self, path: Path) -> Path:
         """Resolve relative paths against the project root."""
         if path.is_absolute():
@@ -84,6 +133,16 @@ class Settings(BaseSettings):
     def resolved_yolo_model_path(self) -> Path:
         """Return the absolute YOLO model path."""
         return self.resolve_path(self.yolo_model_path)
+
+    @property
+    def resolved_upload_dir(self) -> Path:
+        """Return the absolute upload directory."""
+        return self.resolve_path(self.upload_dir)
+
+    @property
+    def resolved_frontend_dist_dir(self) -> Path:
+        """Return the absolute folder of the built dashboard."""
+        return self.resolve_path(self.frontend_dist_dir)
 
     @property
     def resolved_output_dir(self) -> Path:

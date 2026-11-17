@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from functools import lru_cache
 
 from app.core.config import Settings, get_settings

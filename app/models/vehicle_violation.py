@@ -1,9 +1,14 @@
-﻿from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+
+
+def utc_now() -> datetime:
+    """Return the current UTC time as a naive datetime for SQLite storage."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class VehicleViolation(Base):
@@ -42,7 +47,7 @@ class VehicleViolation(Base):
     violation_time: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
-        default=datetime.utcnow,
+        default=utc_now,
     )
 
     video_source: Mapped[str | None] = mapped_column(

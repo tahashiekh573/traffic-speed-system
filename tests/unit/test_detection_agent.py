@@ -1,4 +1,4 @@
-﻿
+
 import numpy as np
 
 from app.agents.detection_agent import DetectionAgent, DetectionInput

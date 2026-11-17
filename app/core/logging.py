@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import logging.config
 
 from app.core.config import Settings, get_settings

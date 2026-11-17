@@ -1,5 +1,5 @@
-﻿from app.repositories.violation_repository import ViolationRepository
-from app.schemas.violation import ViolationCreate
+from app.repositories.violation_repository import ViolationRepository
+from app.schemas.violation import ViolationCreate, ViolationStatisticsResponse
 
 
 class ViolationService:
@@ -38,3 +38,7 @@ class ViolationService:
     def count_violations(self) -> int:
         """Return the total number of stored violations."""
         return self.repository.count()
+
+    def get_statistics(self) -> ViolationStatisticsResponse:
+        """Return aggregate violation statistics."""
+        return ViolationStatisticsResponse(**self.repository.get_statistics())

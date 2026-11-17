@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -7,6 +7,7 @@ from app.schemas.violation import (
     ViolationCreate,
     ViolationListResponse,
     ViolationResponse,
+    ViolationStatisticsResponse,
 )
 from app.services.violation_service import ViolationService
 
@@ -59,6 +60,17 @@ def get_violations(
 
 
 @router.get(
+    "/stats",
+    response_model=ViolationStatisticsResponse,
+)
+def get_violation_statistics(
+    service: ViolationService = Depends(get_violation_service),  # noqa: B008
+):
+    """Return aggregate statistics across all stored violations."""
+    return service.get_statistics()
+
+
+@router.get(
     "/{violation_id}",
     response_model=ViolationResponse,
 )
@@ -76,5 +88,3 @@ def get_violation(
         )
 
     return violation
-
-

@@ -1,1144 +1,477 @@
-﻿# Traffic Speed & Number Plate Recognition System
+﻿# Raftaar — Traffic Speed & Number Plate Recognition System
 
-**An Intelligent Computer Vision-Based Traffic Monitoring and Vehicle Violation Management System**
+**A computer vision traffic monitoring system that detects vehicles, measures their speed, reads the number plates of speeders and explains the result through a voice assistant.**
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-REST%20API-009688?logo=fastapi&logoColor=white)
-![YOLOv8](https://img.shields.io/badge/YOLOv8-Object%20Detection-purple)
-![ByteTrack](https://img.shields.io/badge/ByteTrack-Object%20Tracking-orange)
-![OpenCV](https://img.shields.io/badge/OpenCV-Computer%20Vision-green?logo=opencv&logoColor=white)
-![EasyOCR](https://img.shields.io/badge/EasyOCR-Text%20Recognition-red)
-![Tests](https://img.shields.io/badge/Tests-39%20Passed-brightgreen)
+![YOLOv8](https://img.shields.io/badge/YOLOv8-Detection-purple)
+![ByteTrack](https://img.shields.io/badge/ByteTrack-Tracking-orange)
+![OpenCV](https://img.shields.io/badge/OpenCV-Video-green?logo=opencv&logoColor=white)
+![EasyOCR](https://img.shields.io/badge/EasyOCR-Plates-red)
+![React](https://img.shields.io/badge/React-Dashboard-61dafb?logo=react&logoColor=black)
+![Tests](https://img.shields.io/badge/Tests-58%20Passed-brightgreen)
+
+> This is a computer vision project, **not** an LLM project. The voice assistant is rule-based and runs in the browser; every number it says comes from the backend API.
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#1-project-overview)
-2. [Project Objectives](#2-project-objectives)
-3. [Key Features](#3-key-features)
-4. [Technology Stack](#4-technology-stack)
-5. [System Architecture](#5-system-architecture)
-6. [Processing Workflow](#6-processing-workflow)
+1. [Quick Start — One Link](#1-quick-start--one-link)
+2. [Features](#2-features)
+3. [Technology Stack](#3-technology-stack)
+4. [System Architecture](#4-system-architecture)
+5. [Processing Workflow](#5-processing-workflow)
+6. [Dashboard and Raftaar Voice Assistant](#6-dashboard-and-raftaar-voice-assistant)
 7. [Project Structure](#7-project-structure)
-8. [Installation and Setup](#8-installation-and-setup)
+8. [Manual Installation](#8-manual-installation)
 9. [Environment Configuration](#9-environment-configuration)
 10. [Computer Vision Components](#10-computer-vision-components)
 11. [Speed Estimation Methodology](#11-speed-estimation-methodology)
 12. [Number Plate Recognition](#12-number-plate-recognition)
-13. [REST API Documentation](#13-rest-api-documentation)
+13. [REST API](#13-rest-api)
 14. [Database Design](#14-database-design)
-15. [Running the Application](#15-running-the-application)
-16. [Testing and Code Quality](#16-testing-and-code-quality)
-17. [Implementation Status](#17-implementation-status)
-18. [Limitations](#18-limitations)
-19. [Future Enhancements](#19-future-enhancements)
+15. [Testing and Code Quality](#15-testing-and-code-quality)
+16. [Limitations](#16-limitations)
+17. [Future Enhancements](#17-future-enhancements)
 
 ---
 
-# 1. Project Overview
+# 1. Quick Start — One Link
 
-The **Traffic Speed & Number Plate Recognition System** is a modular computer vision-based application designed to support automated traffic monitoring and vehicle violation management.
+The whole system (dashboard, voice assistant, API and annotated videos) runs from a single server.
 
-The system combines vehicle detection, multi-object tracking, vehicle speed estimation, and number plate text recognition within a layered software architecture.
+**Windows:** double-click **`run.bat`** in the project folder.
 
-It uses **YOLOv8** for vehicle object detection, **ByteTrack** for maintaining vehicle identities across video frames, **OpenCV** for image processing, and **EasyOCR** for recognizing text from vehicle number plate regions.
+It will:
 
-A centralized frame orchestrator coordinates the computer vision agents. The backend uses **FastAPI** to expose REST endpoints for managing traffic violation records, while **SQLAlchemy** and **SQLite** provide structured database persistence.
+1. Create the Python virtual environment and install dependencies (first run only).
+2. Build the React dashboard into `frontend/dist` (only when it is missing).
+3. Start FastAPI and open **http://localhost:8000** in your browser.
 
-The project is organized into independent clients, agents, orchestrators, services, repositories, database models, schemas, and API routers to support maintainability, testing, and future development.
+```text
+run.bat            normal start
+run.bat rebuild    rebuild the dashboard after frontend changes
+set PORT=9000      (before run.bat) use another port
+```
 
-## 1.1 Project Purpose
+Stop the server with **Ctrl+C** in the console window.
 
-The primary purpose of this project is to establish a software foundation for computer vision-based traffic monitoring.
+> Run `run.bat` from the project folder or by double-click. Typing just `run` in another folder may start a different `run.bat` that happens to be on your `PATH`.
 
-The implemented components focus on:
+**Requirements:** Python 3.11+, Node.js 18+ (for the dashboard build), FFmpeg (for browser-playable H.264 output) and the YOLOv8 weights at `weights/yolov8n.pt`.
 
-- Detecting vehicles in image frames.
-- Tracking vehicles across consecutive frames.
-- Estimating vehicle speed using calibrated detection lines.
-- Extracting and normalizing vehicle number plate text.
-- Coordinating frame-level computer vision processing.
-- Managing structured traffic violation records.
-- Providing REST API access to stored violation information.
-
-## 1.2 Application Scope
-
-The current implementation includes the computer vision agents, frame orchestration, database layer, violation management services, and REST API.
-
-The project currently provides the core components required for vehicle analysis and violation record management.
-
-A complete video upload and end-to-end video processing API, live camera streaming, and a graphical dashboard are not yet implemented.
+| Link | What it is |
+|---|---|
+| http://localhost:8000 | Dashboard with the Raftaar assistant |
+| http://localhost:8000/docs | Swagger API documentation |
+| http://localhost:8000/health | Health check |
 
 ---
 
-# 2. Project Objectives
-
-The system is designed around the following objectives.
-
-## 2.1 Vehicle Detection
-
-Use a YOLOv8 object detection model to identify vehicle objects in video frames.
-
-## 2.2 Vehicle Tracking
-
-Use ByteTrack to associate vehicle detections across consecutive frames and maintain consistent tracking identifiers.
-
-## 2.3 Vehicle Speed Estimation
-
-Estimate vehicle speed based on the time required for a tracked vehicle to move between two configured virtual detection lines.
-
-## 2.4 Number Plate Recognition
-
-Extract vehicle number plate regions and recognize alphanumeric text using EasyOCR.
-
-## 2.5 Modular Processing
-
-Separate detection, tracking, speed estimation, and optical character recognition responsibilities into independent components.
-
-## 2.6 Violation Data Management
-
-Provide structured database operations and REST API endpoints for creating, listing, and retrieving traffic violation records.
-
-## 2.7 Maintainability and Testing
-
-Use a layered architecture, dependency injection, data validation, and automated tests to make the application easier to maintain and extend.
-
----
-
-# 3. Key Features
+# 2. Features
 
 | Feature | Description |
 |---|---|
-| Vehicle Detection | YOLOv8-based vehicle object detection |
-| Object Tracking | ByteTrack-based multi-object tracking |
-| Speed Estimation | Speed calculation using two virtual detection lines |
-| Number Plate OCR | Text extraction using EasyOCR |
-| Text Normalization | Uppercase alphanumeric plate text normalization |
-| Frame Orchestration | Coordination of tracking, speed, and plate agents |
-| Violation Management | Creation and retrieval of traffic violation records |
-| REST API | FastAPI-based API endpoints |
-| Database Persistence | SQLAlchemy ORM with SQLite |
-| Data Validation | Pydantic request and response schemas |
-| Configuration Management | Environment-based application settings |
-| Automated Testing | Unit and integration test coverage |
-| Code Quality | Ruff linting and Python compilation checks |
+| Video upload | Drag-and-drop MP4 / AVI / MOV / MKV upload with size and format validation |
+| Background processing | Videos are processed in a background job with live progress polling |
+| Vehicle detection | YOLOv8, restricted to configurable vehicle classes (car, motorcycle, bus, truck) |
+| Tracking | ByteTrack keeps a stable ID per vehicle; pedestrians and other classes are ignored |
+| Speed estimation | Time between two virtual lines with sub-frame crossing interpolation |
+| Plate recognition | EasyOCR on the lower vehicle crop with CLAHE enhancement and plate validation |
+| Late plate back-fill | A plate read *after* a violation was saved is written back to that violation |
+| Violation records | Overspeeding vehicles are stored in SQLite automatically |
+| Annotated video | Boxes, IDs, speeds, plates, speed lines and a live HUD, encoded as H.264 |
+| Dashboard | Speed board with limit marker, plate cards, violation tickets, agent pipeline view |
+| Voice assistant | "Raftaar" robot that listens, talks and answers questions about the result in English, Roman Urdu or Urdu script |
+| Statistics | All-time violation statistics endpoint |
+| Observability | Request-ID header, access logs and JSON error handling middleware |
+| Configuration | Everything configurable through environment variables |
 
 ---
 
-# 4. Technology Stack
+# 3. Technology Stack
 
-The application uses the following technologies.
-
-| Technology | Role in the Project |
+| Layer | Technology |
 |---|---|
-| Python 3.11+ | Main programming language |
-| FastAPI | REST API framework |
-| YOLOv8 | Vehicle object detection |
-| ByteTrack | Multi-object tracking |
-| OpenCV | Video and image processing |
-| EasyOCR | Number plate text recognition |
-| NumPy | Numerical and image-array operations |
-| SQLAlchemy | Database object-relational mapping |
-| SQLite | Relational database |
-| Pydantic | Request and response data validation |
-| Pydantic Settings | Environment-based configuration |
-| Pytest | Unit and integration testing |
-| Ruff | Code quality and linting |
-| Uvicorn | ASGI application server |
+| Language | Python 3.11+, JavaScript (React 19) |
+| API | FastAPI, Uvicorn, Pydantic, Pydantic Settings |
+| Computer vision | Ultralytics YOLOv8, ByteTrack, OpenCV, NumPy |
+| OCR | EasyOCR |
+| Video encoding | FFmpeg (libx264) |
+| Database | SQLAlchemy 2 ORM, SQLite |
+| Dashboard | React, Vite, Framer Motion, Lucide icons |
+| Voice | Browser Web Speech API (`speechSynthesis`, `SpeechRecognition`), with no extra packages or cloud service |
+| Quality | Pytest, Ruff, oxlint |
 
 ---
 
-# 5. System Architecture
+# 4. System Architecture
 
-The project follows a modular, layered architecture.
-
-Each layer has a specific responsibility and communicates with the relevant application components.
-
-## 5.1 High-Level Architecture
+The project follows the layered architecture defined in `CLAUDE.md`.
 
 ```text
-                  VIDEO FRAME INPUT
-                         |
-                         v
-                FRAME ORCHESTRATOR
-                         |
-                         v
-                  TRACKING AGENT
-                 (YOLOv8 + ByteTrack)
-                         |
-              +----------+----------+
-              |                     |
-              v                     v
-         SPEED AGENT            PLATE AGENT
-              |                     |
-              v                     v
-       SPEED ESTIMATION       PLATE EXTRACTION
-              |                     |
-              |                     v
-              |                  EASY OCR
-              |                     |
-              +----------+----------+
-                         |
-                         v
-               FRAME PROCESSING OUTPUT
-                         |
-                         v
-                VIOLATION MANAGEMENT
-                         |
-                         v
-                   FASTAPI ROUTER
-                         |
-                         v
-                  VIOLATION SERVICE
-                         |
-                         v
-                VIOLATION REPOSITORY
-                         |
-                         v
-                   SQLALCHEMY ORM
-                         |
-                         v
-                   SQLITE DATABASE
+ Browser (React dashboard + Raftaar assistant)
+            │  HTTP (same origin: http://localhost:8000)
+            ▼
+ middlewares/  request ID · access log · error → JSON
+            ▼
+ routers/      video_router · violation_router         (HTTP only)
+            ▼
+ services/     VideoJobService · VideoProcessingService · ViolationService
+            │         │
+            │         ▼
+            │   orchestrators/ FrameOrchestrator  (per frame)
+            │         ├─► TrackingAgent  (YOLOv8 + ByteTrack)
+            │         ├─► SpeedAgent     (two-line timing)
+            │         └─► PlateAgent     (EasyOCR)
+            │                    ▲
+            │         clients/  YOLODetectorClient · EasyOCRClient · VideoClient
+            ▼
+ repositories/ ViolationRepository ──► models/ VehicleViolation ──► db/ SQLite
 ```
 
-**Architecture note:** The frame orchestrator uses the TrackingAgent's YOLO tracking operation to perform detection and tracking together. This avoids running a separate duplicate YOLO inference for the same frame.
+| Layer | Responsibility |
+|---|---|
+| `core/` | Settings from environment, logging, domain exceptions, dependencies |
+| `middlewares/` | Request ID, request logging, global error handling |
+| `routers/` | HTTP endpoints only, mapping domain errors to status codes |
+| `schemas/` | Pydantic request / response models |
+| `services/` | Business logic: upload handling, background jobs, result aggregation, statistics |
+| `orchestrators/` | Run the agents for each frame and combine their output |
+| `agents/` | One computer vision responsibility each; they never call each other or persist data |
+| `clients/` | Wrappers around YOLO, EasyOCR and OpenCV |
+| `repositories/` | Database access |
+| `models/` / `db/` | SQLAlchemy entities, engine and sessions |
 
-The frame-processing output and violation management API are implemented as separate application components. Automatic persistence of every orchestrated frame result is not yet integrated.
-
-## 5.2 Architectural Layers
-
-### Core Layer
-
-Responsible for application configuration, logging, exceptions, and shared dependencies.
-
-### Client Layer
-
-Provides interfaces to external computer vision and OCR libraries.
-
-### Agent Layer
-
-Contains the main computer vision processing components:
-
-- DetectionAgent
-- TrackingAgent
-- SpeedAgent
-- PlateAgent
-
-### Orchestration Layer
-
-Coordinates frame-level processing and combines the outputs of the relevant agents.
-
-### Schema Layer
-
-Defines validated request and response structures using Pydantic.
-
-### Service Layer
-
-Contains application-level business logic for violation management.
-
-### Repository Layer
-
-Handles database operations and data access.
-
-### Model Layer
-
-Defines SQLAlchemy database models.
-
-### Database Layer
-
-Manages database connections, sessions, and table initialization.
-
-### Router Layer
-
-Exposes application functionality through REST API endpoints.
+The frame orchestrator uses the TrackingAgent's YOLO `track()` call for detection and tracking together, so YOLO runs only once per frame. `DetectionAgent` remains available as an independent detection component.
 
 ---
 
-# 6. Processing Workflow
+# 5. Processing Workflow
 
-The current frame-processing workflow is organized into the following stages.
+1. **Upload.** `POST /api/v1/videos/process` validates the extension and size, streams the file to `UPLOAD_DIR` and returns a `processing_id` with HTTP 202.
+2. **Background job.** `VideoJobService` runs the pipeline in a daemon thread and updates progress in the in-memory job store.
+3. **Per frame.** `FrameOrchestrator` calls:
+   - `TrackingAgent`, which returns tracked vehicles with stable IDs;
+   - `SpeedAgent`, which returns a speed once a vehicle has crossed both lines;
+   - `PlateAgent`, which returns plate readings (OCR every `OCR_FRAME_INTERVAL` frames, then cached per track).
+4. **Aggregation.** The service collects vehicle types, speeds and plates, saves a violation the first time a vehicle exceeds `SPEED_LIMIT_KMH`, and back-fills the plate if it is read later.
+5. **Annotation.** Every frame is drawn with boxes, labels, plates, speed lines and a HUD, then FFmpeg converts the result to browser-compatible H.264.
+6. **Result.** The status endpoint returns the final result. The dashboard shows it and Raftaar announces it.
 
-## Stage 1: Frame Input
+Uploaded source videos are deleted after processing; temporary OpenCV files are always cleaned up, even on failure.
 
-An image frame is supplied to the frame orchestrator.
+---
 
-The orchestrator validates that the input is a valid, non-empty NumPy array.
+# 6. Dashboard and Raftaar Voice Assistant
 
-## Stage 2: Vehicle Detection and Tracking
+The dashboard (`frontend/`) is a React app that FastAPI serves from `frontend/dist`.
 
-The TrackingAgent uses the YOLOv8 model with ByteTrack to identify vehicles and maintain their tracking IDs across frames.
+**Sections:** live backend status, speed-limit sign, stat cards, video upload with progress, agent pipeline view, annotated output player with download, speed board, number plate cards and violation tickets.
 
-## Stage 3: Speed Estimation
+## Raftaar assistant
 
-The SpeedAgent monitors tracked vehicle positions and determines when a vehicle crosses the configured virtual detection lines.
+The robot in the bottom-right corner is an animated SVG whose face shows its state: idle, listening, thinking, speaking, happy (no violations) or alert (violations found).
 
-It uses interpolated crossing times to estimate the elapsed time between the two lines.
+| Capability | How |
+|---|---|
+| Talks | `speechSynthesis`; can be muted, and every message has a replay button |
+| Listens | `SpeechRecognition` via the mic button (Chrome / Edge; asks for microphone permission) |
+| Languages | **UR** mode (Roman Urdu replies, Urdu speech recognition) and **EN** mode |
+| Auto announcements | Speaks when a video is selected, when processing starts, when it finishes and if it fails |
+| Commands | "start / shuru karo", "upload", "show video / video dikhao", "stop / chup" |
 
-## Stage 4: Number Plate Processing
+Example questions: *"result batao"*, *"kitni violations?"*, *"sab se tez gaari"*, *"average speed"*, *"number plates"*, *"how many cars"*, *"speed limit"*, *"total history"*, or a plate number such as *"LEA1234"*.
 
-The PlateAgent extracts a plate-focused crop from the lower region of the vehicle bounding box and passes it to the OCR client.
+The assistant logic lives in `frontend/src/assistant/assistantBrain.js`. It matches keywords to intents and builds answers from the API result only. It contains no language model or prompt.
 
-## Stage 5: OCR Text Processing
+## Frontend development
 
-EasyOCR identifies possible text candidates. The PlateAgent normalizes the recognized text and filters candidates according to the configured validation rules.
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173, API calls go to http://localhost:8000
+npm run build      # production build served by FastAPI
+npm run lint
+```
 
-## Stage 6: Result Aggregation
-
-The FrameOrchestrator combines the tracking, speed estimation, and number plate processing outputs into a frame-processing result.
-
-## Stage 7: Violation Management
-
-The FastAPI application provides endpoints for creating and retrieving structured violation records.
-
-The API and database layers can manage violation records independently of the frame-processing workflow.
+`VITE_API_BASE_URL` (see `frontend/.env.example`) overrides the API location.
 
 ---
 
 # 7. Project Structure
 
-The repository is organized as follows:
-
 ```text
 traffic-speed-system/
-│
 ├── app/
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── base_agent.py
-│   │   ├── detection_agent.py
-│   │   ├── tracking_agent.py
-│   │   ├── speed_agent.py
-│   │   └── plate_agent.py
-│   │
-│   ├── clients/
-│   │   ├── __init__.py
-│   │   ├── video_client.py
-│   │   ├── detector_client.py
-│   │   ├── yolo_detector_client.py
-│   │   ├── ocr_client.py
-│   │   └── easyocr_client.py
-│   │
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── config.py
-│   │   ├── dependencies.py
-│   │   ├── exceptions.py
-│   │   └── logging.py
-│   │
-│   ├── db/
-│   │   ├── __init__.py
-│   │   ├── base.py
-│   │   ├── init_db.py
-│   │   └── session.py
-│   │
-│   ├── middlewares/
-│   │   └── __init__.py
-│   │
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── vehicle_violation.py
-│   │
-│   ├── orchestrators/
-│   │   ├── __init__.py
-│   │   └── frame_orchestrator.py
-│   │
-│   ├── repositories/
-│   │   ├── __init__.py
-│   │   └── violation_repository.py
-│   │
-│   ├── routers/
-│   │   ├── __init__.py
-│   │   └── violation_router.py
-│   │
-│   ├── schemas/
-│   │   ├── __init__.py
-│   │   └── violation.py
-│   │
-│   ├── services/
-│   │   ├── __init__.py
-│   │   └── violation_service.py
-│   │
-│   └── main.py
-│
-├── data/
-│   ├── videos/
-│   └── outputs/
-│
+│   ├── agents/            base_agent, detection_agent, tracking_agent, speed_agent, plate_agent
+│   ├── clients/           detector_client, yolo_detector_client, ocr_client, easyocr_client, video_client
+│   ├── core/              config, dependencies, exceptions, logging
+│   ├── db/                base, session, init_db
+│   ├── middlewares/       request_context (request ID, logging, error handlers)
+│   ├── models/            vehicle_violation
+│   ├── orchestrators/     frame_orchestrator
+│   ├── repositories/      violation_repository
+│   ├── routers/           video_router, violation_router
+│   ├── schemas/           video, violation
+│   ├── services/          video_job_service, video_processing_service,
+│   │                      video_progress_manager, violation_service
+│   └── main.py            app factory, lifespan, dashboard mount
+├── frontend/
+│   └── src/
+│       ├── api/           trafficApi.js
+│       ├── assistant/     assistantBrain.js (rule-based intents)
+│       ├── components/    RobotFace, RobotAssistant, ResultsPanel
+│       ├── hooks/         useVideoAnalysis, useSpeech
+│       ├── App.jsx, App.css, index.css, config.js
 ├── tests/
 │   ├── unit/
 │   └── integration/
-│
-├── weights/
-│   └── yolov8n.pt
-│
+├── data/                  videos/ (uploads), outputs/ (annotated), traffic.db
+├── weights/               yolov8n.pt
+├── run.bat                one-click launcher
 ├── .env.example
-├── .gitignore
-├── CLAUDE.md
 ├── pyproject.toml
-└── README.md
+└── CLAUDE.md
 ```
 
 ---
 
-# 8. Installation and Setup
+# 8. Manual Installation
 
-Follow these steps to configure the project locally.
-
-## 8.1 Prerequisites
-
-Ensure the following software is installed:
-
-- Python 3.11 or newer
-- Git
-- pip
-- A supported operating system
-- Sufficient memory and processing resources for computer vision dependencies
-
-## 8.2 Clone the Repository
-
-```bash
-git clone <YOUR_REPOSITORY_URL>
-```
-
-Navigate to the project directory:
-
-```bash
-cd traffic-speed-system
-```
-
-Replace the repository URL with the actual Git repository address.
-
-## 8.3 Create a Virtual Environment
+Use these steps if you are not on Windows or prefer to run each part yourself.
 
 ```bash
 python -m venv .venv
-```
-
-## 8.4 Activate the Virtual Environment
-
-**Windows PowerShell:**
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-If PowerShell blocks script execution, run:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-```
-
-Then activate the environment again.
-
-**Linux or macOS:**
-
-```bash
-source .venv/bin/activate
-```
-
-## 8.5 Install Project Dependencies
-
-Install the project and development dependencies:
-
-```bash
+# Windows: .\.venv\Scripts\Activate.ps1      Linux/macOS: source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+
+cp .env.example .env            # Windows: Copy-Item .env.example .env
+
+cd frontend && npm install && npm run build && cd ..
+
+uvicorn app.main:app --reload   # then open http://localhost:8000
 ```
 
-This installs the dependencies defined in `pyproject.toml`.
-
-## 8.6 Configure Environment Variables
-
-Create a local environment configuration file:
-
-```bash
-cp .env.example .env
-```
-
-On Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Update the values in `.env` according to the camera setup and application environment.
-
-## 8.7 Verify the YOLO Model
-
-Ensure the YOLOv8 model file is available at:
-
-```text
-weights/yolov8n.pt
-```
-
-The model path must match the `YOLO_MODEL_PATH` setting.
-
-## 8.8 Initialize the Database
-
-Run:
-
-```bash
-python -m app.db.init_db
-```
-
-This initializes the configured database and creates the required SQLAlchemy tables.
+Database tables and the upload / output folders are created automatically on startup. `python -m app.db.init_db` still works for creating tables manually.
 
 ---
 
 # 9. Environment Configuration
 
-Application settings are managed through environment variables.
+All settings come from environment variables or `.env` (see `.env.example`). Relative paths are resolved against the project root.
 
-The following values are provided in `.env.example`.
-
-| Variable | Default Value | Description |
+| Variable | Default | Description |
 |---|---|---|
-| YOLO_MODEL_PATH | weights/yolov8n.pt | YOLO model file path |
-| CONFIDENCE_THRESHOLD | 0.4 | Object detection confidence threshold |
-| SPEED_LIMIT_KMH | 60 | Configured vehicle speed limit |
-| LINE_1_Y | 300 | First virtual detection line position |
-| LINE_2_Y | 500 | Second virtual detection line position |
-| REAL_DISTANCE_METERS | 10 | Calibrated real-world distance between detection lines |
-| OCR_LANGUAGES | en | OCR language configuration |
-| DATABASE_URL | sqlite:///data/traffic.db | Database connection URL |
-| OUTPUT_DIR | data/outputs | Application output directory |
-| LOG_LEVEL | INFO | Application logging level |
+| `YOLO_MODEL_PATH` | `weights/yolov8n.pt` | YOLO model file |
+| `CONFIDENCE_THRESHOLD` | `0.4` | Detection / tracking confidence |
+| `VEHICLE_CLASSES` | `car,motorcycle,bus,truck` | COCO classes treated as vehicles |
+| `SPEED_LIMIT_KMH` | `60` | Speed limit for violations |
+| `LINE_1_Y` | `300` | First virtual line (pixel row) |
+| `LINE_2_Y` | `500` | Second virtual line; must be greater than `LINE_1_Y` |
+| `REAL_DISTANCE_METERS` | `10` | Real road distance between the lines |
+| `OCR_LANGUAGES` | `en` | Comma-separated EasyOCR languages |
+| `OCR_FRAME_INTERVAL` | `10` | Run OCR every N frames |
+| `OCR_MIN_CONFIDENCE` | `0.25` | Minimum OCR confidence for a candidate |
+| `OCR_USE_GPU` | `false` | Use GPU for EasyOCR |
+| `UPLOAD_DIR` | `data/videos` | Temporary upload folder |
+| `MAX_UPLOAD_SIZE_MB` | `500` | Upload size limit |
+| `ALLOWED_VIDEO_EXTENSIONS` | `.mp4,.avi,.mov,.mkv` | Accepted upload formats |
+| `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Allowed origins for the Vite dev server |
+| `FRONTEND_DIST_DIR` | `frontend/dist` | Built dashboard served at `/` |
+| `DATABASE_URL` | `sqlite:///data/traffic.db` | Database URL |
+| `OUTPUT_DIR` | `data/outputs` | Annotated video folder |
+| `LOG_LEVEL` | `INFO` | Logging level |
 
-**Important:** The default detection-line positions, speed limit, and real-world distance are example configuration values. They must be calibrated for the actual camera position and monitored road.
+> The line positions, distance and limit are example values. Calibrate them for each camera; see [11.5](#115-calibration).
 
 ---
 
 # 10. Computer Vision Components
 
-## 10.1 Video Client
+| Component | File | Responsibility |
+|---|---|---|
+| VideoClient | `app/clients/video_client.py` | OpenCV frame reader with FPS, size and timestamps |
+| YOLODetectorClient | `app/clients/yolo_detector_client.py` | Loads YOLOv8 and returns structured detections |
+| EasyOCRClient | `app/clients/easyocr_client.py` | Plate-character OCR with a confidence filter |
+| DetectionAgent | `app/agents/detection_agent.py` | Detects vehicles only (configured classes) |
+| TrackingAgent | `app/agents/tracking_agent.py` | YOLOv8 + ByteTrack with persistent IDs; drops non-vehicles |
+| SpeedAgent | `app/agents/speed_agent.py` | Line crossings, interpolation, km/h, overspeed flag |
+| PlateAgent | `app/agents/plate_agent.py` | Plate crop, enhancement, OCR, validation, per-track cache |
+| FrameOrchestrator | `app/orchestrators/frame_orchestrator.py` | Runs the agents per frame and combines the output |
 
-**File:** `app/clients/video_client.py`
-
-The video client provides an OpenCV-based interface for video-related operations.
-
-It acts as an abstraction layer between application components and OpenCV.
-
-## 10.2 Detector Client
-
-**File:** `app/clients/detector_client.py`
-
-Defines the detection data structure and detector interface.
-
-It helps separate detection logic from the underlying model implementation.
-
-## 10.3 YOLO Detector Client
-
-**File:** `app/clients/yolo_detector_client.py`
-
-Provides integration with the Ultralytics YOLOv8 model.
-
-Its responsibilities include:
-
-- Loading the configured model.
-- Performing object detection.
-- Providing detection results to the application.
-- Supporting the tracking integration used by the TrackingAgent.
-
-## 10.4 DetectionAgent
-
-**File:** `app/agents/detection_agent.py`
-
-Responsible for vehicle detection-related processing through the detector abstraction.
-
-It separates detection responsibilities from the rest of the application.
-
-## 10.5 TrackingAgent
-
-**File:** `app/agents/tracking_agent.py`
-
-Uses YOLOv8 tracking with ByteTrack to maintain vehicle identities across frames.
-
-Its responsibilities include:
-
-- Processing image frames through the tracking model.
-- Associating detected vehicles across frames.
-- Maintaining tracking identifiers.
-- Returning tracked vehicle information.
-
-## 10.6 SpeedAgent
-
-**File:** `app/agents/speed_agent.py`
-
-Calculates vehicle speed using tracked vehicle movement between two virtual detection lines.
-
-Its responsibilities include:
-
-- Monitoring tracked vehicle positions.
-- Detecting virtual-line crossings.
-- Interpolating crossing timestamps.
-- Calculating speed in kilometers per hour.
-- Checking the configured speed limit.
-- Avoiding duplicate completed measurements for the same track.
-
-## 10.7 PlateAgent
-
-**File:** `app/agents/plate_agent.py`
-
-Processes vehicle bounding boxes to extract possible number plate regions.
-
-Its responsibilities include:
-
-- Extracting a crop from the lower portion of a vehicle bounding box.
-- Sending the crop to the OCR client.
-- Normalizing recognized text.
-- Filtering invalid candidates.
-- Returning a valid plate candidate when available.
-
-## 10.8 OCR Client
-
-**Files:**
-
-- `app/clients/ocr_client.py`
-- `app/clients/easyocr_client.py`
-
-The OCR client abstraction separates text-recognition functionality from the PlateAgent.
-
-EasyOCR provides the underlying optical character recognition implementation.
+Every agent receives and returns frozen dataclasses and never saves files or database records.
 
 ---
 
 # 11. Speed Estimation Methodology
 
-The SpeedAgent estimates vehicle speed using the time difference between two virtual detection-line crossings.
+## 11.1 Principle
 
-## 11.1 Basic Principle
+Two horizontal virtual lines are placed in the frame at `LINE_1_Y` and `LINE_2_Y`. The bottom edge of each tracked vehicle's box is followed from frame to frame.
 
-Two virtual detection lines are configured in the camera frame.
+## 11.2 Crossing-time interpolation
 
-When a tracked vehicle crosses the first line, the system records its crossing time.
+When the box bottom moves from `y_prev` (time `t_prev`) to `y_curr` (time `t_curr`) across a line at `y_line`:
 
-When the same tracked vehicle crosses the second line, the system records the second crossing time.
+```text
+t_cross = t_prev + (y_line − y_prev) / (y_curr − y_prev) × (t_curr − t_prev)
+```
 
-The elapsed time is calculated as:
+This gives sub-frame accuracy instead of snapping to the nearest frame.
 
-\[
-\Delta t = t_2 - t_1
-\]
+## 11.3 Speed
 
-Where:
+```text
+Δt     = |t_line2 − t_line1|
+v_km/h = REAL_DISTANCE_METERS / Δt × 3.6
+```
 
-- \(t_1\) is the first line crossing time.
-- \(t_2\) is the second line crossing time.
-- \(\Delta t\) is the elapsed time in seconds.
+A vehicle is overspeeding when `v_km/h > SPEED_LIMIT_KMH`. Each track is measured once.
 
-## 11.2 Speed Calculation
+## 11.4 Direction
 
-The speed is calculated using:
+Crossings are detected in both directions, so approaching and receding traffic are both measured.
 
-\[
-v = \frac{d}{\Delta t}
-\]
+## 11.5 Calibration
 
-Where:
-
-- \(v\) is speed in meters per second.
-- \(d\) is the calibrated real-world distance in meters.
-- \(\Delta t\) is elapsed time in seconds.
-
-To convert meters per second into kilometers per hour:
-
-\[
-v_{km/h} = \frac{d}{\Delta t} \times 3.6
-\]
-
-## 11.3 Crossing-Time Interpolation
-
-The SpeedAgent uses interpolation to estimate the crossing time when a vehicle moves between observed positions.
-
-This helps estimate the time of line crossing more accurately than relying only on the timestamps of the nearest frames.
-
-## 11.4 Speed Limit Evaluation
-
-The calculated speed is compared against the configured speed limit.
-
-A vehicle is treated as exceeding the configured limit when:
-
-\[
-v_{km/h} > v_{limit}
-\]
-
-The result includes the calculated speed and the speed-limit evaluation.
-
-## 11.5 Calibration Requirements
-
-Accurate speed estimation depends on:
-
-- Correct real-world distance between the detection lines.
-- Accurate camera placement.
-- Stable camera position.
-- Reliable frame timestamps.
-- Appropriate detection-line placement.
-- Consistent vehicle tracking.
-
-The default configuration values are not universal traffic measurements. They must be calibrated for each deployment environment.
+Accuracy depends on the real distance between the lines, a fixed camera, line placement where vehicles are fully visible, and reliable FPS. Short clips or slow traffic may produce no speeds if no vehicle crosses both lines; adjust `LINE_1_Y` / `LINE_2_Y` for the camera angle.
 
 ---
 
 # 12. Number Plate Recognition
 
-The number plate recognition component uses EasyOCR to extract alphanumeric text from vehicle images.
+1. **Region.** The lower half of the vehicle box, with a 3% side margin.
+2. **Enhancement.** 2× cubic upscale, grayscale, CLAHE contrast.
+3. **OCR.** EasyOCR with an `A–Z 0–9` allowlist, keeping candidates above `OCR_MIN_CONFIDENCE`.
+4. **Validation.** Uppercase, non-alphanumerics removed, 4–12 characters, at least one letter and one digit.
+5. **Selection.** Candidates are voted per track (ties go to the longer text); the accepted plate is cached for that track.
+6. **Back-fill.** If the plate is read after the violation was stored, the stored record is updated.
 
-## 12.1 Plate Region Extraction
-
-The PlateAgent receives vehicle bounding-box information and extracts a crop from the lower region of the vehicle bounding box.
-
-This region is used as the input for OCR processing.
-
-## 12.2 Optical Character Recognition
-
-The EasyOCR client processes the cropped image and returns recognized text candidates.
-
-## 12.3 Text Normalization
-
-Recognized text is normalized by:
-
-- Converting characters to uppercase.
-- Removing non-alphanumeric characters.
-- Filtering candidates according to the supported length rules.
-
-The current validation accepts normalized candidates containing between 4 and 12 alphanumeric characters.
-
-## 12.4 Candidate Selection
-
-When multiple valid candidates are returned, the PlateAgent selects the longest valid candidate.
-
-## 12.5 Recognition Limitations
-
-Recognition quality depends on:
-
-- Image resolution.
-- Plate visibility.
-- Lighting conditions.
-- Camera angle.
-- Motion blur.
-- Plate cleanliness and physical condition.
-- OCR language configuration.
-- Regional number plate formats.
-
-OCR results should be treated as recognition candidates rather than guaranteed legal identification.
+OCR results are recognition candidates, not legal identification. Quality depends on resolution, angle, lighting, motion blur and regional plate formats.
 
 ---
 
-# 13. REST API Documentation
+# 13. REST API
 
-The backend uses FastAPI to provide REST endpoints for traffic violation record management.
-
-## 13.1 Base URL
-
-When running locally:
-
-```text
-http://127.0.0.1:8000
-```
-
-## 13.2 Available Endpoints
+Base URL: `http://localhost:8000`. Every response carries an `X-Request-ID` header; errors are JSON.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| GET | `/health` | Check application health |
-| POST | `/api/v1/violations` | Create a violation record |
-| GET | `/api/v1/violations` | Retrieve violation records with pagination |
-| GET | `/api/v1/violations/{violation_id}` | Retrieve a violation by ID |
+| GET | `/health` | Health check |
+| GET | `/api/v1/config` | Public pipeline settings (limit, lines, upload rules) |
+| POST | `/api/v1/videos/process` | Upload a video (multipart `file`); returns `202` + `processing_id` |
+| GET | `/api/v1/videos/{id}/status` | Progress, error and final result |
+| GET | `/api/v1/videos/{id}/output` | Annotated H.264 MP4 (`409` until complete) |
+| POST | `/api/v1/violations` | Create a violation manually |
+| GET | `/api/v1/violations?limit=&offset=` | Paginated violations |
+| GET | `/api/v1/violations/stats` | All-time statistics |
+| GET | `/api/v1/violations/{id}` | One violation (`404` if missing) |
 
-## 13.3 Health Check
+Upload errors: `415` unsupported format, `413` too large, `400` empty file.
 
-**Endpoint:**
-
-```http
-GET /health
-```
-
-**Example Response:**
-
-```json
-{
-  "status": "healthy"
-}
-```
-
-## 13.4 Create a Violation Record
-
-**Endpoint:**
-
-```http
-POST /api/v1/violations
-```
-
-**Example Request:**
+**Completed job result (abridged):**
 
 ```json
 {
-  "track_id": 101,
-  "plate_number": "ABC123",
-  "speed_kmh": 85.5,
-  "speed_limit_kmh": 60.0,
-  "video_source": "traffic_video.mp4"
+  "status": "completed",
+  "progress_percent": 100.0,
+  "result": {
+    "filename": "traffic.mp4",
+    "fps": 30.0, "width": 1920, "height": 1080,
+    "total_frames": 660, "processed_frames": 660,
+    "duration_seconds": 22.0, "processing_seconds": 95.4,
+    "speed_limit_kmh": 60.0,
+    "vehicles_tracked": 18,
+    "vehicle_types": {"car": 15, "truck": 3},
+    "speed_records": [
+      {"track_id": 7, "speed_kmh": 85.0, "is_overspeeding": true,
+       "vehicle_type": "car", "plate_number": "ABC123"}
+    ],
+    "average_speed_kmh": 62.5, "max_speed_kmh": 85.0,
+    "violations_saved": 1,
+    "violations": [{"id": 1, "track_id": 7, "plate_number": "ABC123",
+                    "speed_kmh": 85.0, "speed_limit_kmh": 60.0,
+                    "violation_time": "2026-11-17T10:00:00Z",
+                    "video_source": "traffic.mp4"}],
+    "plates_identified": 1,
+    "recognized_plates": [{"track_id": 7, "plate_number": "ABC123"}],
+    "output_video_url": "/api/v1/videos/<id>/output"
+  }
 }
 ```
 
-The request schema validates the required tracking and speed fields, along with optional plate, timestamp, and video-source information.
-
-A successful request returns the created violation record.
-
-## 13.5 Retrieve Violation Records
-
-**Endpoint:**
-
-```http
-GET /api/v1/violations
-```
-
-Optional query parameters:
-
-| Parameter | Description |
-|---|---|
-| limit | Maximum number of records to return |
-| offset | Number of records to skip |
-
-**Example:**
-
-```http
-GET /api/v1/violations?limit=10&offset=0
-```
-
-**Example Response:**
-
-```json
-{
-  "items": [],
-  "total": 0,
-  "limit": 10,
-  "offset": 0
-}
-```
-
-The response includes the returned records, total record count, page size, and pagination offset.
-
-## 13.6 Retrieve a Violation by ID
-
-**Endpoint:**
-
-```http
-GET /api/v1/violations/{violation_id}
-```
-
-**Example:**
-
-```http
-GET /api/v1/violations/1
-```
-
-The endpoint returns the matching violation record or an HTTP 404 response when the requested record does not exist.
-
-## 13.7 Interactive API Documentation
-
-FastAPI automatically provides interactive API documentation.
-
-Swagger UI:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-ReDoc:
-
-```text
-http://127.0.0.1:8000/redoc
-```
-
-OpenAPI schema:
-
-```text
-http://127.0.0.1:8000/openapi.json
-```
+Interactive docs: `/docs` (Swagger) and `/redoc`.
 
 ---
 
 # 14. Database Design
 
-The project uses SQLAlchemy as its ORM and SQLite as its default relational database.
-
-## 14.1 Database Model
-
-**File:** `app/models/vehicle_violation.py`
-
-The application defines a `VehicleViolation` model.
-
-**Database table:**
-
-```text
-vehicle_violations
-```
-
-## 14.2 Table Fields
+Table `vehicle_violations` (`app/models/vehicle_violation.py`):
 
 | Field | Description |
 |---|---|
-| id | Primary key |
-| track_id | Vehicle tracking identifier |
-| plate_number | Recognized number plate text; nullable |
-| speed_kmh | Calculated vehicle speed |
-| speed_limit_kmh | Configured speed limit |
-| violation_time | Timestamp associated with the violation record |
-| video_source | Optional source video information |
+| `id` | Primary key |
+| `track_id` | ByteTrack vehicle ID |
+| `plate_number` | Recognized plate (nullable, back-filled when read later) |
+| `speed_kmh` | Measured speed |
+| `speed_limit_kmh` | Limit at the time of the violation |
+| `violation_time` | UTC timestamp (returned with a `Z` / `+00:00` offset) |
+| `video_source` | Original video filename |
 
-## 14.3 Database Components
-
-| Component | File | Responsibility |
-|---|---|---|
-| Base | `app/db/base.py` | SQLAlchemy declarative base |
-| Session | `app/db/session.py` | Engine and database session management |
-| Initialization | `app/db/init_db.py` | Database table creation |
-| Model | `app/models/vehicle_violation.py` | Violation table definition |
-| Repository | `app/repositories/violation_repository.py` | Database access operations |
-
-## 14.4 Repository Operations
-
-The violation repository provides operations for:
-
-- Creating a violation record.
-- Retrieving a record by its ID.
-- Retrieving multiple records.
-- Counting stored records.
-
-The service layer uses these repository operations to implement application-level violation management.
+Repository operations: create, get by ID, list with pagination, count, update plate and aggregate statistics.
 
 ---
 
-# 15. Running the Application
-
-After completing installation and database initialization, start the FastAPI application.
-
-## 15.1 Start the Development Server
+# 15. Testing and Code Quality
 
 ```bash
-uvicorn app.main:app --reload
+pytest -q                 # 58 tests: unit + integration
+ruff check app tests      # lint
+cd frontend && npm run lint && npm run build
 ```
 
-The server will be available at:
+Coverage includes all four agents, the orchestrator, video processing service, video job API (upload, late plate back-fill, failures, size / format / empty validation), violation repository / service / router / schemas, statistics, configuration parsing and the request middleware.
 
-```text
-http://127.0.0.1:8000
-```
-
-## 15.2 Verify Application Health
-
-Open:
-
-```text
-http://127.0.0.1:8000/health
-```
-
-Expected response:
-
-```json
-{
-  "status": "healthy"
-}
-```
-
-## 15.3 Open API Documentation
-
-Visit:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-Use Swagger UI to inspect and test the available API endpoints.
-
----
-
-# 16. Testing and Code Quality
-
-Automated tests are included to validate the application's main components.
-
-The test suite is divided into unit and integration tests.
-
-## 16.1 Unit Tests
-
-Unit tests cover individual application components, including:
-
-- DetectionAgent.
-- TrackingAgent.
-- SpeedAgent.
-- PlateAgent.
-- FrameOrchestrator.
-- Violation repository.
-- Violation schemas.
-- Violation service.
-- Violation API router.
-- Main application health endpoint.
-
-## 16.2 Integration Tests
-
-Integration tests verify database and API interactions.
-
-The current integration tests cover:
-
-- Violation repository database integration.
-- Violation API database integration.
-
-## 16.3 Run All Tests
-
-```bash
-pytest tests -v
-```
-
-For a compact result:
-
-```bash
-pytest tests -q
-```
-
-## 16.4 Run Code Quality Checks
-
-```bash
-ruff check app tests
-```
-
-## 16.5 Compile Python Files
-
-```bash
-python -m compileall -q app tests
-```
-
-## 16.6 Current Verification Results
-
-The recorded project verification produced:
+Latest verification:
 
 | Check | Result |
 |---|---|
-| Unit and Integration Tests | 39 Passed |
-| Ruff Linting | All Checks Passed |
-| Python Compilation | Successful |
-| Database Initialization | Successful |
-| API Integration Tests | Passed |
-
-The test run reported one non-failing Starlette/httpx deprecation warning related to the test client dependency. It did not affect the passing test results.
+| Pytest | 58 passed |
+| Ruff | All checks passed |
+| oxlint | No warnings |
+| Vite build | Successful |
+| Real clip through the API | Completed; annotated H.264 video generated |
 
 ---
 
-# 17. Implementation Status
+# 16. Limitations
 
-The following table describes the current implementation status.
-
-| Component | Status |
-|---|---|
-| Project Structure | Implemented |
-| Application Configuration | Implemented |
-| Logging and Exceptions | Implemented |
-| OpenCV Video Client | Implemented |
-| YOLOv8 Detector Client | Implemented |
-| DetectionAgent | Implemented |
-| ByteTrack TrackingAgent | Implemented |
-| SpeedAgent | Implemented |
-| PlateAgent | Implemented |
-| EasyOCR Client | Implemented |
-| Frame Orchestrator | Implemented |
-| SQLAlchemy Database Layer | Implemented |
-| Vehicle Violation Model | Implemented |
-| Violation Repository | Implemented |
-| Pydantic Schemas | Implemented |
-| Violation Service | Implemented |
-| FastAPI Violation Router | Implemented |
-| Health Endpoint | Implemented |
-| Unit Tests | Implemented |
-| Integration Tests | Implemented |
-| End-to-End Video Processing API | Not Yet Implemented |
-| Video Upload Endpoint | Not Yet Implemented |
-| Live Camera Streaming | Not Yet Implemented |
-| Automated Annotated Video Generation | Not Yet Implemented |
-| Frontend Dashboard | Not Yet Implemented |
-| Automatic Frame-to-Database Violation Integration | Not Yet Implemented |
+- **Calibration.** Speed accuracy depends on correct line placement and real-world distance per camera.
+- **Processing speed.** CPU-only inference is slow for 1080p (roughly a minute or more per few seconds of video); a CUDA GPU helps significantly.
+- **OCR.** Small, blurred or angled plates are often not readable.
+- **Job store.** Job progress is kept in memory, so a server restart forgets running jobs (saved violations stay in the database).
+- **Voice.** Speech recognition needs Chrome or Edge and microphone permission; available voices depend on the operating system.
+- **Security.** There is no authentication; the API is intended for local use.
 
 ---
 
-# 18. Limitations
+# 17. Future Enhancements
 
-The current implementation provides the core computer vision components and violation management backend, but some production-level capabilities remain outside the current scope.
-
-## 18.1 Video Processing Integration
-
-The frame orchestrator processes individual frames, but a complete end-to-end video processing pipeline has not yet been implemented.
-
-## 18.2 Camera Calibration
-
-Speed estimation requires accurate real-world distance calibration and appropriate virtual detection-line positioning.
-
-Incorrect calibration can produce inaccurate speed measurements.
-
-## 18.3 OCR Accuracy
-
-Number plate recognition can be affected by poor lighting, low resolution, motion blur, camera angle, and regional plate variations.
-
-## 18.4 Database Integration
-
-The violation management API and frame-processing components are implemented separately. Automatic creation of database records from orchestrated frame results still requires integration.
-
-## 18.5 User Interface
-
-The project currently provides a backend API and does not include a graphical dashboard.
-
-## 18.6 Deployment Readiness
-
-Production deployment may require additional configuration for authentication, authorization, monitoring, logging, database management, and operational security.
+1. Live RTSP / webcam streams.
+2. Perspective (homography) calibration instead of horizontal lines.
+3. A dedicated plate detector before OCR.
+4. Persistent job queue (e.g. database-backed) for restarts and parallel jobs.
+5. Authentication and role-based access.
+6. Reports and exports of violation history.
+7. Docker packaging for deployment.
 
 ---
 
-# 19. Future Enhancements
+## Acknowledgements
 
-The architecture provides a foundation for extending the system with additional capabilities.
+[FastAPI](https://fastapi.tiangolo.com/) · [Ultralytics YOLO](https://docs.ultralytics.com/) · [ByteTrack](https://github.com/ifzhang/ByteTrack) · [OpenCV](https://opencv.org/) · [EasyOCR](https://github.com/JaidedAI/EasyOCR) · [SQLAlchemy](https://www.sqlalchemy.org/) · [Pydantic](https://docs.pydantic.dev/) · [React](https://react.dev/) · [Vite](https://vite.dev/)
 
-Potential future improvements include:
-
-1. **End-to-End Video Processing:** Add a service to read video files and process frames sequentially.
-2. **Live Camera Integration:** Support RTSP streams and connected traffic cameras.
-3. **Automated Violation Recording:** Connect orchestrator outputs directly to the violation service and database.
-4. **Annotated Video Generation:** Produce processed videos with vehicle bounding boxes, tracking IDs, speed values, and plate information.
-5. **Frontend Dashboard:** Develop a web interface for monitoring vehicles and reviewing violation records.
-6. **Advanced Camera Calibration:** Introduce perspective correction and more robust real-world distance estimation.
-7. **OCR Improvements:** Improve number plate recognition through image preprocessing and region-specific validation.
-8. **Authentication and Authorization:** Add secure access controls for API users.
-9. **Reporting and Analytics:** Provide violation statistics, vehicle counts, and speed analysis.
-10. **Production Deployment:** Add deployment configuration, monitoring, and operational logging.
-
----
-
-# License
-
-No license has been specified for this project yet. Add a license file before distributing the software publicly.
-
----
-
-# Acknowledgements
-
-This project uses open-source technologies and libraries, including:
-
-- [Python](https://www.python.org/)
-- [FastAPI](https://fastapi.tiangolo.com/)
-- [Ultralytics YOLO](https://docs.ultralytics.com/)
-- [ByteTrack](https://github.com/ifzhang/ByteTrack)
-- [OpenCV](https://opencv.org/)
-- [EasyOCR](https://github.com/JaidedAI/EasyOCR)
-- [SQLAlchemy](https://www.sqlalchemy.org/)
-- [Pydantic](https://docs.pydantic.dev/)
-- [Pytest](https://pytest.org/)
-- [Ruff](https://docs.astral.sh/ruff/)
-
----
-
-**Project:** Traffic Speed & Number Plate Recognition System  
-**Category:** Computer Vision / Intelligent Transportation Systems  
-**Backend:** FastAPI  
-**Detection:** YOLOv8  
-**Tracking:** ByteTrack  
-**OCR:** EasyOCR  
-**Database:** SQLite with SQLAlchemy  
-**Language:** Python 3.11+
+No license has been specified yet; add one before distributing the software publicly.

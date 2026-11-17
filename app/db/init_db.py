@@ -1,4 +1,4 @@
-﻿from app.db.base import Base
+from app.db.base import Base
 from app.db.session import engine
 from app.models import vehicle_violation  # noqa: F401
 

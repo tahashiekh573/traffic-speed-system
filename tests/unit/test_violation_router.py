@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from unittest.mock import Mock
 
 from fastapi import FastAPI
@@ -119,5 +119,33 @@ def test_create_violation_rejects_invalid_data():
 
     assert response.status_code == 422
     service.create_violation.assert_not_called()
+
+    app.dependency_overrides.clear()
+
+
+def test_get_violation_statistics_endpoint():
+    from app.schemas.violation import ViolationStatisticsResponse
+
+    service = Mock()
+    service.get_statistics.return_value = ViolationStatisticsResponse(
+        total_violations=4,
+        average_speed_kmh=77.5,
+        max_speed_kmh=101.0,
+        violations_with_plate=3,
+        videos_analyzed=2,
+        latest_violation_time=datetime(2026, 10, 30, 12, 0),
+    )
+
+    app.dependency_overrides[get_violation_service] = lambda: service
+
+    response = client.get("/api/v1/violations/stats")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_violations"] == 4
+    assert body["max_speed_kmh"] == 101.0
+    assert body["latest_violation_time"].endswith("Z") or "+00:00" in (
+        body["latest_violation_time"]
+    )
 
     app.dependency_overrides.clear()

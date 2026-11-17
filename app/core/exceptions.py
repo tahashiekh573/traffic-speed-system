@@ -1,4 +1,4 @@
-﻿class TrafficSystemError(Exception):
+class TrafficSystemError(Exception):
     """Base exception for the traffic monitoring application."""
 
 
@@ -32,3 +32,23 @@ class RepositoryError(TrafficSystemError):
 
 class ResourceNotFoundError(TrafficSystemError):
     """Raised when a requested resource does not exist."""
+
+
+class VideoUploadError(TrafficSystemError):
+    """Base error for rejected video uploads."""
+
+
+class UnsupportedVideoFormatError(VideoUploadError):
+    """Raised when an uploaded file has an unsupported extension."""
+
+
+class EmptyVideoUploadError(VideoUploadError):
+    """Raised when an uploaded file contains no data."""
+
+
+class VideoUploadTooLargeError(VideoUploadError):
+    """Raised when an uploaded file exceeds the configured size limit."""
+
+
+class JobNotReadyError(TrafficSystemError):
+    """Raised when a processing job's output is requested too early."""

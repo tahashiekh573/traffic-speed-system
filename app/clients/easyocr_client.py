@@ -1,38 +1,43 @@
-﻿
+"""EasyOCR wrapper used by the plate recognition agent."""
+
 import easyocr
+import numpy as np
+
+PLATE_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 class EasyOCRClient:
-    """EasyOCR implementation with confidence filtering."""
+    """EasyOCR implementation of the OCR client interface."""
 
-    def __init__(self, languages: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        languages: list[str] | None = None,
+        min_confidence: float = 0.25,
+        use_gpu: bool = False,
+    ) -> None:
         self.languages = languages or ["en"]
+        self.min_confidence = min_confidence
+        self.reader = easyocr.Reader(self.languages, gpu=use_gpu)
 
-        self.reader = easyocr.Reader(
-            self.languages,
-            gpu=False,
-        )
-
-    def read_text(self, image) -> list[str]:
-        """Extract text candidates with reasonable OCR confidence."""
-
+    def read_text(self, image: np.ndarray) -> list[str]:
+        """Return text candidates whose OCR confidence passes the threshold."""
         results = self.reader.readtext(
             image,
             detail=1,
             paragraph=False,
-            allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            allowlist=PLATE_ALLOWLIST,
         )
 
-        candidates = []
+        candidates: list[str] = []
 
         for result in results:
             if len(result) < 3:
                 continue
 
-            text = result[1].strip()
+            text = str(result[1]).strip()
             confidence = float(result[2])
 
-            if confidence >= 0.25 and text:
+            if text and confidence >= self.min_confidence:
                 candidates.append(text)
 
         return candidates

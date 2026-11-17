@@ -1,16 +1,17 @@
-﻿
+"""Run the frame pipeline over a video and write an annotated MP4."""
+
+import os
+import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
-import os
-import shutil
-import subprocess
 
 import cv2
 
-from app.core.config import get_settings
 from app.clients.video_client import VideoClient
+from app.core.config import Settings, get_settings
 from app.orchestrators.frame_orchestrator import (
     FrameOrchestrator,
     FrameProcessingInput,
@@ -43,7 +44,9 @@ class VideoProcessingService:
         self,
         orchestrator: FrameOrchestrator | None = None,
         video_client_factory: Callable | None = None,
+        settings: Settings | None = None,
     ) -> None:
+        self.settings = settings or get_settings()
         self.orchestrator = orchestrator or FrameOrchestrator()
         self.video_client_factory = video_client_factory or VideoClient
 
@@ -154,8 +157,57 @@ class VideoProcessingService:
         return getattr(obj, key, default)
 
     @staticmethod
-    def draw_annotations(frame, output, speed_states):
-        settings = get_settings()
+    def draw_hud(
+        frame,
+        speed_limit_kmh: float,
+        vehicles_seen: int,
+        violations: int,
+    ):
+        """Draw a translucent summary banner in the top-right corner."""
+        lines = [
+            f"LIMIT {speed_limit_kmh:.0f} KM/H",
+            f"VEHICLES {vehicles_seen}",
+            f"VIOLATIONS {violations}",
+        ]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        width = 230
+        height = 24 * len(lines) + 16
+        x1 = max(0, frame.shape[1] - width - 12)
+        y1 = 12
+
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay, (x1, y1), (x1 + width, y1 + height), (20, 16, 12), -1
+        )
+        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+
+        for index, text in enumerate(lines):
+            alert = index == 2 and violations > 0
+            color = (80, 80, 255) if alert else (230, 230, 230)
+            cv2.putText(
+                frame,
+                text,
+                (x1 + 12, y1 + 28 + index * 24),
+                font,
+                0.55,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        return frame
+
+    @staticmethod
+    def draw_annotations(
+        frame,
+        output,
+        speed_states,
+        plate_states: dict | None = None,
+        settings: Settings | None = None,
+    ):
+        """Draw speed lines, vehicle boxes, speeds and plates on a frame."""
+        settings = settings or get_settings()
+        plate_states = plate_states or {}
 
         line_1 = int(settings.line_1_y)
         line_2 = int(settings.line_2_y)
@@ -260,6 +312,19 @@ class VideoProcessingService:
             if overspeed:
                 label += " OVERSPEED"
 
+            plate = plate_states.get(track_id)
+            if plate:
+                cv2.putText(
+                    frame,
+                    f"PLATE {plate}",
+                    (x1, min(frame.shape[0] - 6, y2 + 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
             font = cv2.FONT_HERSHEY_SIMPLEX
             scale = 0.55
             thickness = 2
@@ -309,6 +374,7 @@ class VideoProcessingService:
         on_progress: Callable | None = None,
         output_video_path: str | Path | None = None,
     ) -> VideoProcessingResult:
+        """Process every frame, report progress and write the annotated video."""
 
         client = self.video_client_factory(video_path)
         writer = None
@@ -328,6 +394,10 @@ class VideoProcessingService:
         )
 
         speed_states = {}
+        plate_states: dict[int, str] = {}
+        seen_tracks: set[int] = set()
+        speed_limit = float(self.settings.speed_limit_kmh)
+        completed = False
 
         try:
             with client as video:
@@ -403,6 +473,14 @@ class VideoProcessingService:
                         [],
                     )
 
+                    plate_output = self._get_value(output, "plate_output")
+                    readings = self._get_value(plate_output, "readings", [])
+                    for reading in readings or []:
+                        plate_states[reading.track_id] = reading.plate_text
+
+                    for track in self._get_value(output, "tracks", []) or []:
+                        seen_tracks.add(self._get_value(track, "track_id"))
+
                     for measurement in measurements or []:
                         track_id = self._get_value(
                             measurement,
@@ -425,13 +503,25 @@ class VideoProcessingService:
                             "overspeed": overspeed,
                         }
 
-                    annotated_frame = self.draw_annotations(
-                        frame.copy(),
-                        output,
-                        speed_states,
-                    )
-
                     if writer is not None:
+                        annotated_frame = self.draw_annotations(
+                            frame.copy(),
+                            output,
+                            speed_states,
+                            plate_states,
+                            self.settings,
+                        )
+                        violation_count = sum(
+                            1
+                            for state in speed_states.values()
+                            if state.get("overspeed")
+                        )
+                        self.draw_hud(
+                            annotated_frame,
+                            speed_limit,
+                            len(seen_tracks),
+                            violation_count,
+                        )
                         writer.write(annotated_frame)
 
                     if on_frame_processed:
@@ -464,15 +554,23 @@ class VideoProcessingService:
                         "No video frames were processed."
                     )
 
+            completed = True
+
         finally:
             if writer is not None:
                 writer.release()
 
+            if not completed and temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
         if output_path and temporary_path:
-            self.convert_to_h264(
-                temporary_path,
-                output_path,
-            )
+            try:
+                self.convert_to_h264(
+                    temporary_path,
+                    output_path,
+                )
+            finally:
+                temporary_path.unlink(missing_ok=True)
 
         return VideoProcessingResult(
             video_path=str(Path(video_path)),
