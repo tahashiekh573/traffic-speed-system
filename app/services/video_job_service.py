@@ -77,6 +77,7 @@ class _JobResultCollector:
         self.plates: dict[int, str] = {}
         self.speeds: dict[int, tuple[float, bool]] = {}
         self.helmets: dict[int, tuple[bool, float]] = {}
+        self.plate_attempts: set[int] = set()
         # One record per (vehicle, violation type).
         self.violations: dict[tuple[int, str], ViolationResponse] = {}
         self.helmet_check_enabled = False
@@ -90,6 +91,8 @@ class _JobResultCollector:
                 self.vehicle_types.setdefault(track_id, str(class_name))
 
         plate_output = _value(output, "plate_output")
+        attempted = _value(plate_output, "attempted_track_ids", ()) or ()
+        self.plate_attempts.update(attempted)
         for reading in _value(plate_output, "readings", []) or []:
             self._record_plate(int(reading.track_id), str(reading.plate_text))
 
@@ -211,6 +214,7 @@ class _JobResultCollector:
                 round(sum(speeds) / len(speeds), 2) if speeds else None
             ),
             max_speed_kmh=round(max(speeds), 2) if speeds else None,
+            plates_attempted=len(self.plate_attempts | set(self.plates)),
             plates_identified=len(self.plates),
             recognized_plates=[
                 PlateRecognitionResponse(track_id=track_id, plate_number=plate)

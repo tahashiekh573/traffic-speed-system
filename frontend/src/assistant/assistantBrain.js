@@ -686,13 +686,14 @@ function replyOne(message, ctx, lang) {
     case "plates": {
       const plates = r.recognized_plates || [];
       if (!plates.length) {
+        const tried = r.plates_attempted || 0;
         return L(
-          violations.length
-            ? "I couldn't read the speeders' plates. Plates need to be large and sharp in the frame."
-            : "No plates were read — I only read plates of overspeeding vehicles, and there were none.",
-          violations.length
-            ? "Speeders ki plate parhi nahi ja saki. Plate frame mein bari aur saaf honi chahiye."
-            : "Koi plate nahi parhi gayi — main sirf over-speeding gaariyon ki plate parhta hoon, aur koi nahi thi."
+          tried
+            ? `I tried to read ${tried} vehicles' plates, but none was readable — the letters are too small or blurry in this video. Plates need about 20-pixel-tall letters: 1080p or 4K footage, or a camera closer to the road.`
+            : "No vehicle came close enough to read a plate. Closer or higher-resolution footage helps.",
+          tried
+            ? `Maine ${tried} gaariyon ki plate parhne ki koshish ki, lekin koi parhi nahi ja saki — is video mein huroof bohat chhote ya dhundle hain. Plate ke huroof kam az kam ~20 pixel oonche hone chahiye: 1080p ya 4K video, ya camera sarak ke qareeb ho.`
+            : "Koi gaari itni qareeb nahi aayi ke plate parhi ja sake. Qareeb se ya zyada resolution ki video behtar rahegi."
         );
       }
       const list = plates.slice(0, 6).map((p) => p.plate_number).join(", ");

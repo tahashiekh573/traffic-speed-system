@@ -147,6 +147,7 @@ class FrameOrchestrator:
                 candidate_track_ids=(
                     None if self.read_all_plates else frozenset(self._violators)
                 ),
+                priority_track_ids=frozenset(self._violators),
             )
         )
 

@@ -27,6 +27,8 @@ class PlateInput:
     tracks: list[TrackedObject]
     frame_index: int = 0
     candidate_track_ids: frozenset[int] | None = None
+    # Read these first (e.g. violators); they may also be off-screen.
+    priority_track_ids: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,8 @@ class PlateOutput:
     """All plates known for the vehicles in the current frame."""
 
     readings: list[PlateReading]
+    # Vehicles whose plate was attempted (OCR run) in this frame.
+    attempted_track_ids: tuple[int, ...] = ()
 
 
 class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
@@ -286,6 +290,7 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
 
         self._last_frame_index = data.frame_index
         candidates = data.candidate_track_ids
+        priority = data.priority_track_ids
 
         for track in data.tracks:
             if track.track_id not in self._plate_cache:
@@ -296,6 +301,7 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
         pool = {track.track_id for track in data.tracks}
         if candidates is not None:
             pool = (pool & candidates) | (candidates & self._best_crops.keys())
+        pool |= priority & self._best_crops.keys()
 
         due = [
             (track_id, self._best_crops[track_id])
@@ -303,10 +309,13 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             if track_id in self._best_crops
             and self._is_due(track_id, self._best_crops[track_id][0], data.frame_index)
         ]
-        due.sort(key=lambda item: item[1][0], reverse=True)
+        # Violators first, then the largest (closest, most readable) plates.
+        due.sort(key=lambda item: (item[0] in priority, item[1][0]), reverse=True)
 
         newly_read: list[PlateReading] = []
+        attempted: list[int] = []
         for track_id, (_, crop, _) in due[: self.max_per_frame]:
+            attempted.append(track_id)
             self._attempts[track_id] = self._attempts.get(track_id, 0) + 1
             self._last_attempt_frame[track_id] = data.frame_index
 
@@ -316,7 +325,8 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
                 self._best_crops.pop(track_id, None)
                 newly_read.append(PlateReading(track_id, plate))
 
-        self._forget_stale_crops(data.frame_index, candidates or frozenset())
+        keep = (candidates or frozenset()) | priority
+        self._forget_stale_crops(data.frame_index, keep)
 
         visible = {track.track_id for track in data.tracks}
         readings = [
@@ -325,4 +335,4 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             if track_id in visible
         ]
         readings += [r for r in newly_read if r.track_id not in visible]
-        return PlateOutput(readings=readings)
+        return PlateOutput(readings=readings, attempted_track_ids=tuple(attempted))

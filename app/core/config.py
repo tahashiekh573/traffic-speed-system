@@ -49,9 +49,10 @@ class Settings(BaseSettings):
     ocr_frame_interval: int = Field(default=10, ge=1)
     ocr_min_confidence: float = Field(default=0.25, ge=0.0, le=1.0)
     ocr_use_gpu: bool = False
-    # "overspeeding" = read plates of speeders only (fast), "all" = every vehicle
-    ocr_mode: str = "overspeeding"
-    ocr_max_per_frame: int = Field(default=2, ge=1)
+    # "all" = every vehicle, violators first (default);
+    # "overspeeding" = violators only (fastest).
+    ocr_mode: str = "all"
+    ocr_max_per_frame: int = Field(default=1, ge=1)
     ocr_max_attempts_per_track: int = Field(default=6, ge=1)
     ocr_min_box_height: int = Field(default=60, ge=0)
     ocr_max_crop_width: int = Field(default=360, ge=64)

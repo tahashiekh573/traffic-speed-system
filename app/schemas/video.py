@@ -62,6 +62,7 @@ class VideoProcessingResponse(BaseModel):
     max_speed_kmh: float | None = None
 
     # Number plate recognition results
+    plates_attempted: int = 0
     plates_identified: int = 0
     recognized_plates: list[PlateRecognitionResponse] = Field(
         default_factory=list

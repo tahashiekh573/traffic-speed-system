@@ -74,7 +74,11 @@ function PlateWall({ result }) {
       <EmptyState
         icon={ScanLine}
         title="No number plates recognized"
-        text="Vehicles may have been detected, but OCR did not return a valid plate. Higher-resolution, closer footage helps."
+        text={
+          result.plates_attempted
+            ? `OCR tried ${result.plates_attempted} vehicles but no plate was readable — the characters are too small or blurry in this video. Plates need roughly 20+ pixel tall letters: use 1080p/4K footage or a camera closer to the road.`
+            : "No vehicle came close enough for a plate read. Higher-resolution, closer footage helps."
+        }
       />
     );
   }

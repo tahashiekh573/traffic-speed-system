@@ -169,3 +169,24 @@ def test_plate_agent_reads_flagged_vehicle_after_it_left_the_frame():
 
     assert ocr.calls == 1
     assert [(r.track_id, r.plate_text) for r in result.readings] == [(9, "LEA1234")]
+
+
+def test_plate_agent_reads_violators_before_larger_vehicles():
+    from app.core.config import Settings
+
+    ocr = CountingOCRClient()
+    agent = PlateAgent(ocr_client=ocr, settings=Settings(ocr_max_per_frame=1))
+    frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    big = make_track(1, bbox=(10.0, 10.0, 190.0, 190.0))
+    small_violator = make_track(2, bbox=(10.0, 10.0, 90.0, 90.0))
+
+    result = agent.run(
+        PlateInput(
+            frame=frame,
+            tracks=[big, small_violator],
+            priority_track_ids=frozenset({2}),
+        )
+    )
+
+    assert result.attempted_track_ids == (2,)
+    assert [r.track_id for r in result.readings] == [2]
