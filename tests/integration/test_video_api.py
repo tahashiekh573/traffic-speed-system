@@ -98,6 +98,7 @@ class FakeVideoProcessingService:
         output_video_path=None,
         on_frame_processed=None,
         on_progress=None,
+        on_live_snapshot=None,
     ):
         frames = [
             SimpleNamespace(
@@ -322,3 +323,126 @@ def test_failed_job_reports_error(client, tmp_path):
 
     output_response = client.get(f"/api/v1/videos/{processing_id}/output")
     assert output_response.status_code == 409
+
+
+def test_live_preview_is_served_while_processing(client, tmp_path):
+    import numpy as np
+
+    from app.services.video_processing_service import LiveSnapshot
+
+    captured = {}
+
+    class PreviewService(FakeVideoProcessingService):
+        def process_video(self, video_path, on_live_snapshot=None, **kwargs):
+            on_live_snapshot(
+                LiveSnapshot(
+                    frame=np.zeros((720, 1280, 3), dtype=np.uint8),
+                    vehicles_seen=4,
+                    violations=1,
+                    plates=1,
+                    timestamp_seconds=2.0,
+                )
+            )
+            captured["status"] = client.get(
+                f"/api/v1/videos/{captured['id']}/status"
+            ).json()
+            captured["preview"] = client.get(
+                f"/api/v1/videos/{captured['id']}/preview"
+            )
+            return super().process_video(video_path, **kwargs)
+
+    install_job_service(
+        client,
+        tmp_path,
+        processing_service_factory=PreviewService,
+    )
+    service = app.dependency_overrides[get_video_job_service]()
+
+    # Capture the generated ID before the synchronous job starts.
+    original_create = service.progress_manager.create
+
+    def create(processing_id, filename):
+        captured["id"] = processing_id
+        return original_create(processing_id, filename)
+
+    service.progress_manager.create = create
+
+    response = client.post(
+        "/api/v1/videos/process",
+        files={"file": ("live.mp4", b"data", "video/mp4")},
+    )
+
+    assert response.status_code == 202
+    assert captured["status"]["status"] == "processing"
+    assert captured["status"]["live"]["vehicles_seen"] == 4
+    assert captured["status"]["live"]["preview_available"] is True
+    assert captured["preview"].status_code == 200
+    assert captured["preview"].headers["content-type"] == "image/jpeg"
+    assert captured["preview"].content[:2] == bytes.fromhex("ffd8")
+
+
+def test_preview_returns_409_before_first_frame(client, tmp_path):
+    install_job_service(client, tmp_path)
+    service = app.dependency_overrides[get_video_job_service]()
+    service.progress_manager.create("waiting", "a.mp4")
+
+    response = client.get("/api/v1/videos/waiting/preview")
+
+    assert response.status_code == 409
+
+
+def test_no_helmet_rider_is_saved_as_violation_with_backfilled_plate(
+    client, tmp_path
+):
+    class HelmetService(FakeVideoProcessingService):
+        def process_video(self, video_path, on_frame_processed=None, **kwargs):
+            frames = [
+                SimpleNamespace(
+                    tracks=[SimpleNamespace(track_id=4, class_name="motorcycle")],
+                    plate_output=SimpleNamespace(readings=[]),
+                    speed_output=SimpleNamespace(measurements=[]),
+                    helmet_output=SimpleNamespace(
+                        statuses=[],
+                        newly_decided=[
+                            SimpleNamespace(
+                                track_id=4, has_helmet=False, confidence=0.9
+                            )
+                        ],
+                    ),
+                ),
+                SimpleNamespace(
+                    tracks=[SimpleNamespace(track_id=4, class_name="motorcycle")],
+                    plate_output=SimpleNamespace(
+                        readings=[SimpleNamespace(track_id=4, plate_text="LEB777")]
+                    ),
+                    speed_output=SimpleNamespace(measurements=[]),
+                    helmet_output=SimpleNamespace(statuses=[], newly_decided=[]),
+                ),
+            ]
+            for output in frames:
+                on_frame_processed(output)
+            return super().process_video(video_path, **kwargs)
+
+    install_job_service(client, tmp_path, processing_service_factory=HelmetService)
+
+    response = client.post(
+        "/api/v1/videos/process",
+        files={"file": ("bike.mp4", b"data", "video/mp4")},
+    )
+    result = client.get(
+        f"/api/v1/videos/{response.json()['processing_id']}/status"
+    ).json()["result"]
+
+    assert result["helmet_check_enabled"] is True
+    assert result["no_helmet_violations"] == 1
+    assert result["helmet_records"][0]["has_helmet"] is False
+    assert result["helmet_records"][0]["plate_number"] == "LEB777"
+    helmet_violation = next(
+        v for v in result["violations"] if v["violation_type"] == "no_helmet"
+    )
+    assert helmet_violation["track_id"] == 4
+    assert helmet_violation["speed_kmh"] is None
+    assert helmet_violation["plate_number"] == "LEB777"
+
+    stats = client.get("/api/v1/violations/stats").json()
+    assert stats["no_helmet_violations"] == 1

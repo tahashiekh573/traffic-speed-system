@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import { CheckCircle2, Gauge, ScanLine, ShieldAlert, Siren } from "lucide-react";
+import { CheckCircle2, Gauge, HardHat, ScanLine, ShieldAlert, Siren } from "lucide-react";
 
 const fmt = (value, digits = 1) =>
   value === null || value === undefined ? "—" : Number(value).toFixed(digits);
@@ -25,7 +25,7 @@ function SpeedBoard({ result }) {
       <EmptyState
         icon={Gauge}
         title="No speeds measured"
-        text="Vehicles were tracked, but none crossed both virtual speed lines. Adjust LINE_1_Y / LINE_2_Y for this camera angle."
+        text="Vehicles were tracked, but none crossed both virtual speed lines. Lines sit at LINE_1_Y / LINE_2_Y (fractions of the frame height). Speed needs a fixed camera looking along the road."
       />
     );
   }
@@ -107,6 +107,48 @@ function PlateWall({ result }) {
   );
 }
 
+function HelmetBoard({ result, helmetAvailable }) {
+  if (!result.helmet_check_enabled) {
+    return (
+      <EmptyState
+        icon={HardHat}
+        title="Helmet check is off"
+        text={
+          helmetAvailable
+            ? "The helmet model was not active for this video. Re-run the analysis."
+            : "Helmet check is not ready. It needs the model at weights/helmet.onnx plus onnxruntime (.venv/Scripts/python -m pip install onnxruntime), then a server restart. Riders without a helmet will then be boxed in red and ticketed."
+        }
+      />
+    );
+  }
+
+  const records = result.helmet_records || [];
+  if (!records.length) {
+    return (
+      <EmptyState
+        icon={HardHat}
+        title="No riders checked"
+        text="No motorcycle was close enough to check the rider's head."
+      />
+    );
+  }
+
+  return (
+    <div className="helmet-grid">
+      {records.map((record) => (
+        <div key={record.track_id} className={`helmet-card ${record.has_helmet ? "ok" : "bad"}`}>
+          <div className="helmet-icon"><HardHat size={18} /></div>
+          <div>
+            <strong>Motorcycle #{record.track_id}</strong>
+            <span>{record.has_helmet ? "Helmet worn" : "No helmet"} · {Math.round(record.confidence * 100)}%</span>
+          </div>
+          {record.plate_number && <span className="mini-plate">{record.plate_number}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ViolationTable({ result }) {
   const violations = result.violations || [];
 
@@ -115,7 +157,7 @@ function ViolationTable({ result }) {
       <EmptyState
         icon={CheckCircle2}
         title="No violations"
-        text={`${result.processed_frames} frames processed — every measured vehicle stayed within the limit.`}
+        text={`${result.processed_frames} frames processed — no overspeeding${result.helmet_check_enabled ? " and no rider without a helmet" : ""}.`}
       />
     );
   }
@@ -126,6 +168,7 @@ function ViolationTable({ result }) {
         <thead>
           <tr>
             <th>Ticket</th>
+            <th>Type</th>
             <th>Vehicle</th>
             <th>Number plate</th>
             <th>Speed</th>
@@ -134,29 +177,42 @@ function ViolationTable({ result }) {
           </tr>
         </thead>
         <tbody>
-          {violations.map((item) => (
-            <tr key={item.id}>
-              <td className="mono">TKT-{String(item.id).padStart(5, "0")}</td>
-              <td>#{item.track_id}</td>
-              <td>{item.plate_number ? <span className="mini-plate">{item.plate_number}</span> : <em>Not recognized</em>}</td>
-              <td className="danger-text">{fmt(item.speed_kmh)} km/h</td>
-              <td>+{fmt(item.speed_kmh - item.speed_limit_kmh)} km/h</td>
-              <td>{item.violation_time ? new Date(item.violation_time).toLocaleString() : "—"}</td>
-            </tr>
-          ))}
+          {violations.map((item) => {
+            const helmet = item.violation_type === "no_helmet";
+            return (
+              <tr key={item.id}>
+                <td className="mono">TKT-{String(item.id).padStart(5, "0")}</td>
+                <td>
+                  <span className={`type-badge ${helmet ? "type-helmet" : "type-speed"}`}>
+                    {helmet ? <HardHat size={12} /> : <Gauge size={12} />}
+                    {helmet ? "No helmet" : "Overspeed"}
+                  </span>
+                </td>
+                <td>#{item.track_id}</td>
+                <td>{item.plate_number ? <span className="mini-plate">{item.plate_number}</span> : <em>Not recognized</em>}</td>
+                <td className={helmet ? "" : "danger-text"}>
+                  {item.speed_kmh != null ? `${fmt(item.speed_kmh)} km/h` : "—"}
+                </td>
+                <td>
+                  {!helmet && item.speed_kmh != null ? `+${fmt(item.speed_kmh - item.speed_limit_kmh)} km/h` : "—"}
+                </td>
+                <td>{item.violation_time ? new Date(item.violation_time).toLocaleString() : "—"}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-export default function ResultsPanel({ result, isProcessing }) {
+export default function ResultsPanel({ result, isProcessing, helmetAvailable }) {
   return (
     <section className="panel results-panel" id="results">
       <div className="panel-heading">
         <div>
           <div className="panel-title"><ScanLine size={18} /> Detection Results</div>
-          <p>Measured speeds, recognized plates and overspeeding tickets</p>
+          <p>Measured speeds, helmet checks, recognized plates and tickets</p>
         </div>
         <span className="panel-tag">ANALYSIS RESULTS</span>
       </div>
@@ -183,8 +239,25 @@ export default function ResultsPanel({ result, isProcessing }) {
             <PlateWall result={result} />
           </div>
 
+          <div className="result-block" id="helmets">
+            <h3>
+              <HardHat size={16} /> Helmet check
+              <span>
+                {result.helmet_check_enabled
+                  ? `${result.motorcycles_checked} checked · ${result.no_helmet_violations} without helmet`
+                  : "off"}
+              </span>
+            </h3>
+            <HelmetBoard result={result} helmetAvailable={helmetAvailable} />
+          </div>
+
           <div className="result-block" id="violations">
-            <h3><ShieldAlert size={16} /> Violation tickets <span>{result.violations_saved} saved</span></h3>
+            <h3>
+              <ShieldAlert size={16} /> Violation tickets
+              <span>
+                {result.overspeed_violations ?? result.violations_saved} overspeed · {result.no_helmet_violations || 0} no helmet
+              </span>
+            </h3>
             <ViolationTable result={result} />
           </div>
         </div>

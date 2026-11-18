@@ -30,6 +30,13 @@ if not exist "weights\yolov8n.pt" (
     echo [warn] weights\yolov8n.pt not found - download YOLOv8n into the weights folder.
 )
 
+if exist "weights\helmet.onnx" (
+    ".venv\Scripts\python.exe" -c "import onnxruntime" >nul 2>nul || (
+        echo [warn] Helmet check is OFF: onnxruntime is not installed.
+        echo        Install it once with:  .venv\Scripts\python -m pip install onnxruntime
+    )
+)
+
 REM ---- Dashboard build ---------------------------------------
 if /i "%1"=="rebuild" if exist "frontend\dist" rmdir /s /q "frontend\dist"
 

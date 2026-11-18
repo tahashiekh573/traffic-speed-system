@@ -24,6 +24,7 @@ def test_create_violation_endpoint():
         speed_kmh=85.5,
         speed_limit_kmh=60.0,
         violation_time=datetime(2026, 10, 30, 12, 0),
+        violation_type="overspeed",
         video_source="test_video.mp4",
     )
 
@@ -76,6 +77,7 @@ def test_get_violation_by_id_endpoint():
         speed_kmh=85.5,
         speed_limit_kmh=60.0,
         violation_time=datetime(2026, 10, 30, 12, 0),
+        violation_type="overspeed",
         video_source="test_video.mp4",
     )
 

@@ -12,6 +12,7 @@ import cv2
 
 from app.clients.video_client import VideoClient
 from app.core.config import Settings, get_settings
+from app.core.dependencies import get_frame_orchestrator
 from app.orchestrators.frame_orchestrator import (
     FrameOrchestrator,
     FrameProcessingInput,
@@ -37,6 +38,18 @@ class VideoProcessingProgress:
     status: str
 
 
+@dataclass(frozen=True)
+class LiveSnapshot:
+    """Latest annotated frame and running counts while a video is processed."""
+
+    frame: object  # annotated BGR numpy image
+    vehicles_seen: int
+    violations: int
+    plates: int
+    timestamp_seconds: float
+    no_helmet: int = 0
+
+
 class VideoProcessingService:
     """Process videos, annotate vehicles and save browser-compatible MP4."""
 
@@ -47,7 +60,7 @@ class VideoProcessingService:
         settings: Settings | None = None,
     ) -> None:
         self.settings = settings or get_settings()
-        self.orchestrator = orchestrator or FrameOrchestrator()
+        self.orchestrator = orchestrator or get_frame_orchestrator()
         self.video_client_factory = video_client_factory or VideoClient
 
     @staticmethod
@@ -162,6 +175,7 @@ class VideoProcessingService:
         speed_limit_kmh: float,
         vehicles_seen: int,
         violations: int,
+        no_helmet: int | None = None,
     ):
         """Draw a translucent summary banner in the top-right corner."""
         lines = [
@@ -169,6 +183,8 @@ class VideoProcessingService:
             f"VEHICLES {vehicles_seen}",
             f"VIOLATIONS {violations}",
         ]
+        if no_helmet is not None:
+            lines.append(f"NO HELMET {no_helmet}")
         font = cv2.FONT_HERSHEY_SIMPLEX
         width = 230
         height = 24 * len(lines) + 16
@@ -182,7 +198,7 @@ class VideoProcessingService:
         cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
         for index, text in enumerate(lines):
-            alert = index == 2 and violations > 0
+            alert = (index == 2 and violations > 0) or (index == 3 and bool(no_helmet))
             color = (80, 80, 255) if alert else (230, 230, 230)
             cv2.putText(
                 frame,
@@ -204,13 +220,20 @@ class VideoProcessingService:
         speed_states,
         plate_states: dict | None = None,
         settings: Settings | None = None,
+        scale: float = 1.0,
     ):
-        """Draw speed lines, vehicle boxes, speeds and plates on a frame."""
+        """Draw speed lines, vehicle boxes, speeds and plates on a frame.
+
+        ``scale`` maps original-video coordinates onto a resized frame.
+        """
         settings = settings or get_settings()
         plate_states = plate_states or {}
 
-        line_1 = int(settings.line_1_y)
-        line_2 = int(settings.line_2_y)
+        # Lines are defined on the original frame; this frame may be resized.
+        original_height = frame.shape[0] / scale if scale else frame.shape[0]
+        row_1, row_2 = settings.line_rows(int(round(original_height)))
+        line_1 = int(row_1 * scale)
+        line_2 = int(row_2 * scale)
 
         cv2.line(
             frame,
@@ -263,7 +286,7 @@ class VideoProcessingService:
             if bbox is None or len(bbox) != 4:
                 continue
 
-            x1, y1, x2, y2 = map(int, bbox)
+            x1, y1, x2, y2 = (int(value * scale) for value in bbox)
 
             track_id = VideoProcessingService._get_value(
                 track,
@@ -272,11 +295,12 @@ class VideoProcessingService:
 
             state = speed_states.get(track_id, {})
             overspeed = state.get("overspeed", False)
+            no_helmet = state.get("no_helmet", False)
             speed = state.get("speed")
 
             color = (
                 (0, 0, 255)
-                if overspeed
+                if overspeed or no_helmet
                 else (0, 220, 100)
             )
 
@@ -312,6 +336,11 @@ class VideoProcessingService:
             if overspeed:
                 label += " OVERSPEED"
 
+            if no_helmet:
+                label += " NO HELMET"
+            elif state.get("helmet_checked"):
+                label += " HELMET OK"
+
             plate = plate_states.get(track_id)
             if plate:
                 cv2.putText(
@@ -326,14 +355,14 @@ class VideoProcessingService:
                 )
 
             font = cv2.FONT_HERSHEY_SIMPLEX
-            scale = 0.55
+            font_scale = 0.55
             thickness = 2
 
             (text_width, text_height), baseline = (
                 cv2.getTextSize(
                     label,
                     font,
-                    scale,
+                    font_scale,
                     thickness,
                 )
             )
@@ -359,7 +388,7 @@ class VideoProcessingService:
                     max(text_height, y1 - baseline - 4),
                 ),
                 font,
-                scale,
+                font_scale,
                 (255, 255, 255),
                 thickness,
                 cv2.LINE_AA,
@@ -367,80 +396,70 @@ class VideoProcessingService:
 
         return frame
 
+    def _fit_output(self, frame):
+        """Downscale annotated frames so writing and encoding stay fast."""
+        max_width = self.settings.output_max_width
+        if not max_width or frame.shape[1] <= max_width:
+            return frame
+        scale = max_width / frame.shape[1]
+        size = (max_width, int(round(frame.shape[0] * scale / 2)) * 2)
+        return cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+
     def process_video(
         self,
         video_path: str | Path,
         on_frame_processed: Callable | None = None,
         on_progress: Callable | None = None,
         output_video_path: str | Path | None = None,
+        on_live_snapshot: Callable[[LiveSnapshot], None] | None = None,
     ) -> VideoProcessingResult:
-        """Process every frame, report progress and write the annotated video."""
+        """Run the pipeline every few frames, annotate all frames, write MP4.
 
+        Only every ``frame_stride``-th frame goes through the vision agents
+        (TARGET_PROCESS_FPS). The frames in between are written with the
+        latest annotations, which keeps the video smooth at a fraction of
+        the cost. Speed accuracy is kept by the SpeedAgent's interpolation.
+        """
         client = self.video_client_factory(video_path)
         writer = None
 
-        output_path = (
-            Path(output_video_path)
-            if output_video_path
-            else None
-        )
-
+        output_path = Path(output_video_path) if output_video_path else None
         temporary_path = (
-            output_path.with_name(
-                f"{output_path.stem}_opencv_temp.mp4"
-            )
+            output_path.with_name(f"{output_path.stem}_opencv_temp.mp4")
             if output_path
             else None
         )
 
-        speed_states = {}
+        reset = getattr(self.orchestrator, "reset", None)
+        if callable(reset):
+            reset()
+
+        speed_states: dict = {}
         plate_states: dict[int, str] = {}
         seen_tracks: set[int] = set()
         speed_limit = float(self.settings.speed_limit_kmh)
         completed = False
+        last_output = None
+        next_snapshot_at = 0.0
 
         try:
             with client as video:
                 fps = video.fps
 
                 if not isfinite(fps) or fps <= 0:
-                    raise ValueError(
-                        "Video FPS must be positive."
-                    )
+                    raise ValueError("Video FPS must be positive.")
 
                 width = video.width
                 height = video.height
                 total_frames = video.frame_count
+                stride = self.settings.frame_stride(fps)
 
-                processed_frames = 0
                 frame_index = 0
-
-                if output_path and temporary_path:
-                    output_path.parent.mkdir(
-                        parents=True,
-                        exist_ok=True,
-                    )
-
-                    writer = cv2.VideoWriter(
-                        str(temporary_path),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
-                        fps,
-                        (width, height),
-                    )
-
-                    if not writer.isOpened():
-                        raise RuntimeError(
-                            "Unable to create annotated output video."
-                        )
+                analysed_frames = 0
 
                 if on_progress:
                     on_progress(
-                        VideoProcessingProgress(
-                            0,
-                            total_frames,
-                            0.0,
-                            "processing",
-                        )
+                        VideoProcessingProgress(0, total_frames, 0.0, "processing")
                     )
 
                 while True:
@@ -450,109 +469,91 @@ class VideoProcessingService:
                         break
 
                     if frame is None:
-                        raise RuntimeError(
-                            "Empty video frame."
+                        raise RuntimeError("Empty video frame.")
+
+                    if frame_index % stride == 0:
+                        output = self.orchestrator.process_frame(
+                            FrameProcessingInput(
+                                frame=frame,
+                                timestamp_seconds=video.timestamp_seconds,
+                                frame_index=frame_index,
+                            )
+                        )
+                        last_output = output
+                        analysed_frames += 1
+                        self._collect_states(
+                            output, speed_states, plate_states, seen_tracks
                         )
 
-                    output = self.orchestrator.process_frame(
-                        FrameProcessingInput(
-                            frame=frame,
-                            timestamp_seconds=video.timestamp_seconds,
-                            frame_index=frame_index,
-                        )
+                        if on_frame_processed:
+                            on_frame_processed(output)
+
+                    timestamp = video.timestamp_seconds
+                    snapshot_due = bool(on_live_snapshot) and (
+                        timestamp >= next_snapshot_at
                     )
 
-                    speed_output = self._get_value(
-                        output,
-                        "speed_output",
-                    )
-
-                    measurements = self._get_value(
-                        speed_output,
-                        "measurements",
-                        [],
-                    )
-
-                    plate_output = self._get_value(output, "plate_output")
-                    readings = self._get_value(plate_output, "readings", [])
-                    for reading in readings or []:
-                        plate_states[reading.track_id] = reading.plate_text
-
-                    for track in self._get_value(output, "tracks", []) or []:
-                        seen_tracks.add(self._get_value(track, "track_id"))
-
-                    for measurement in measurements or []:
-                        track_id = self._get_value(
-                            measurement,
-                            "track_id",
-                        )
-
-                        speed = self._get_value(
-                            measurement,
-                            "speed_kmh",
-                        )
-
-                        overspeed = self._get_value(
-                            measurement,
-                            "is_overspeeding",
-                            False,
-                        )
-
-                        speed_states[track_id] = {
-                            "speed": speed,
-                            "overspeed": overspeed,
-                        }
-
-                    if writer is not None:
-                        annotated_frame = self.draw_annotations(
-                            frame.copy(),
-                            output,
+                    if output_path or snapshot_due:
+                        annotated = self._annotate(
+                            frame,
+                            last_output,
                             speed_states,
                             plate_states,
-                            self.settings,
-                        )
-                        violation_count = sum(
-                            1
-                            for state in speed_states.values()
-                            if state.get("overspeed")
-                        )
-                        self.draw_hud(
-                            annotated_frame,
+                            seen_tracks,
                             speed_limit,
-                            len(seen_tracks),
-                            violation_count,
                         )
-                        writer.write(annotated_frame)
 
-                    if on_frame_processed:
-                        on_frame_processed(output)
+                        if output_path and temporary_path:
+                            annotated_out = annotated
+                            if writer is None:
+                                output_path.parent.mkdir(parents=True, exist_ok=True)
+                                out_h, out_w = annotated_out.shape[:2]
+                                writer = cv2.VideoWriter(
+                                    str(temporary_path),
+                                    cv2.VideoWriter_fourcc(*"mp4v"),
+                                    fps,
+                                    (out_w, out_h),
+                                )
+                                if not writer.isOpened():
+                                    raise RuntimeError(
+                                        "Unable to create annotated output video."
+                                    )
+                            writer.write(annotated_out)
 
-                    processed_frames += 1
+                        if snapshot_due:
+                            next_snapshot_at = (
+                                timestamp + self.settings.preview_interval_seconds
+                            )
+                            on_live_snapshot(
+                                LiveSnapshot(
+                                    frame=annotated,
+                                    vehicles_seen=len(seen_tracks),
+                                    violations=self._violation_count(speed_states),
+                                    plates=len(plate_states),
+                                    no_helmet=self._no_helmet_count(speed_states),
+                                    timestamp_seconds=timestamp,
+                                )
+                            )
+
                     frame_index += 1
 
                     if on_progress:
                         percentage = (
-                            min(
-                                processed_frames / total_frames * 100,
-                                100,
-                            )
+                            min(frame_index / total_frames * 100, 100)
                             if total_frames > 0
                             else 0.0
                         )
-
                         on_progress(
                             VideoProcessingProgress(
-                                processed_frames,
+                                frame_index,
                                 total_frames,
                                 round(percentage, 2),
                                 "processing",
                             )
                         )
 
-                if processed_frames == 0:
-                    raise ValueError(
-                        "No video frames were processed."
-                    )
+                if frame_index == 0 or analysed_frames == 0:
+                    raise ValueError("No video frames were processed.")
 
             completed = True
 
@@ -565,10 +566,7 @@ class VideoProcessingService:
 
         if output_path and temporary_path:
             try:
-                self.convert_to_h264(
-                    temporary_path,
-                    output_path,
-                )
+                self.convert_to_h264(temporary_path, output_path)
             finally:
                 temporary_path.unlink(missing_ok=True)
 
@@ -578,10 +576,84 @@ class VideoProcessingService:
             width=width,
             height=height,
             total_frames=total_frames,
-            processed_frames=processed_frames,
-            output_video_path=(
-                str(output_path)
-                if output_path
-                else None
-            ),
+            processed_frames=frame_index,
+            output_video_path=str(output_path) if output_path else None,
         )
+
+    @staticmethod
+    def _violation_count(speed_states: dict) -> int:
+        """Vehicles with at least one violation (overspeed or no helmet)."""
+        return sum(
+            1
+            for state in speed_states.values()
+            if state.get("overspeed") or state.get("no_helmet")
+        )
+
+    @staticmethod
+    def _no_helmet_count(speed_states: dict) -> int:
+        return sum(1 for state in speed_states.values() if state.get("no_helmet"))
+
+    def _collect_states(
+        self,
+        output,
+        speed_states: dict,
+        plate_states: dict[int, str],
+        seen_tracks: set[int],
+    ) -> None:
+        """Remember speeds, plates and IDs for drawing later frames."""
+        plate_output = self._get_value(output, "plate_output")
+        for reading in self._get_value(plate_output, "readings", []) or []:
+            plate_states[reading.track_id] = reading.plate_text
+
+        for track in self._get_value(output, "tracks", []) or []:
+            seen_tracks.add(self._get_value(track, "track_id"))
+
+        speed_output = self._get_value(output, "speed_output")
+        for measurement in self._get_value(speed_output, "measurements", []) or []:
+            track_id = self._get_value(measurement, "track_id")
+            state = speed_states.setdefault(track_id, {})
+            state["speed"] = self._get_value(measurement, "speed_kmh")
+            state["overspeed"] = self._get_value(measurement, "is_overspeeding", False)
+
+        helmet_output = self._get_value(output, "helmet_output")
+        for status in self._get_value(helmet_output, "statuses", []) or []:
+            state = speed_states.setdefault(status.track_id, {})
+            state["helmet_checked"] = True
+            state["no_helmet"] = not status.has_helmet
+
+    def _annotate(
+        self,
+        frame,
+        output,
+        speed_states: dict,
+        plate_states: dict[int, str],
+        seen_tracks: set[int],
+        speed_limit: float,
+    ):
+        """Return a resized copy of the frame with boxes, labels and the HUD.
+
+        Drawing on the already-downscaled frame is much cheaper than
+        drawing on the full-resolution frame and resizing afterwards.
+        """
+        annotated = self._fit_output(frame)
+        if annotated is frame:
+            annotated = frame.copy()
+        scale = annotated.shape[1] / frame.shape[1]
+        if output is not None:
+            self.draw_annotations(
+                annotated,
+                output,
+                speed_states,
+                plate_states,
+                self.settings,
+                scale,
+            )
+        helmet_enabled = bool(getattr(self.orchestrator, "helmet_check_enabled", False))
+        self.draw_hud(
+            annotated,
+            speed_limit,
+            len(seen_tracks),
+            self._violation_count(speed_states),
+            self._no_helmet_count(speed_states) if helmet_enabled else None,
+        )
+        return annotated

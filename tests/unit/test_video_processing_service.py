@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
+from app.core.config import Settings
 from app.services.video_processing_service import VideoProcessingService
+
+# Run the pipeline on every frame unless a test says otherwise.
+EVERY_FRAME = Settings(target_process_fps=0)
 
 
 class FakeVideoClient:
@@ -56,6 +60,7 @@ def test_process_video_processes_all_frames():
     service = VideoProcessingService(
         orchestrator=orchestrator,
         video_client_factory=lambda path: video_client,
+        settings=EVERY_FRAME,
     )
 
     results = []
@@ -83,6 +88,7 @@ def test_process_video_passes_correct_timestamps():
     service = VideoProcessingService(
         orchestrator=orchestrator,
         video_client_factory=lambda path: video_client,
+        settings=EVERY_FRAME,
     )
 
     service.process_video("sample.mp4")
@@ -105,6 +111,7 @@ def test_process_video_releases_video_after_processing_error():
     service = VideoProcessingService(
         orchestrator=FailingOrchestrator(),
         video_client_factory=lambda path: video_client,
+        settings=EVERY_FRAME,
     )
 
     with pytest.raises(RuntimeError, match="Frame processing failed"):
@@ -122,6 +129,7 @@ def test_process_video_rejects_invalid_fps():
     service = VideoProcessingService(
         orchestrator=orchestrator,
         video_client_factory=lambda path: video_client,
+        settings=EVERY_FRAME,
     )
 
     with pytest.raises(ValueError, match="Video FPS"):
@@ -129,3 +137,50 @@ def test_process_video_rejects_invalid_fps():
 
     assert video_client.released is True
     assert orchestrator.received_inputs == []
+
+
+def test_process_video_skips_frames_with_target_fps():
+    video_client = FakeVideoClient("sample.mp4")
+    video_client.frames = [
+        np.zeros((480, 640, 3), dtype=np.uint8) for _ in range(9)
+    ]
+    video_client.frame_count = 9
+    orchestrator = FakeOrchestrator()
+
+    service = VideoProcessingService(
+        orchestrator=orchestrator,
+        video_client_factory=lambda path: video_client,
+        settings=Settings(target_process_fps=10),  # 30 fps -> every 3rd frame
+    )
+
+    result = service.process_video("sample.mp4")
+
+    assert result.processed_frames == 9
+    assert [data.frame_index for data in orchestrator.received_inputs] == [0, 3, 6]
+
+
+def test_draw_annotations_scales_every_box():
+    """Regression: a font-size variable once overwrote the box scale."""
+    from types import SimpleNamespace
+
+    frame = np.zeros((300, 400, 3), dtype=np.uint8)
+    tracks = [
+        SimpleNamespace(
+            track_id=1, bbox=(40, 400, 120, 480), class_name="car", confidence=0.9
+        ),
+        SimpleNamespace(
+            track_id=2, bbox=(400, 300, 700, 560), class_name="car", confidence=0.9
+        ),
+    ]
+
+    VideoProcessingService.draw_annotations(
+        frame,
+        {"tracks": tracks},
+        {},
+        settings=Settings(line_1_y=10, line_2_y=20),
+        scale=0.5,
+    )
+
+    # Second box must be drawn at bbox * 0.5 -> right edge x=350, y 150..280.
+    assert frame[260, 350].any()
+    assert not frame[260, 380].any()

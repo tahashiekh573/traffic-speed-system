@@ -1,6 +1,9 @@
 from datetime import UTC, datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+ViolationType = Literal["overspeed", "no_helmet"]
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -15,10 +18,18 @@ class ViolationCreate(BaseModel):
 
     track_id: int = Field(gt=0)
     plate_number: str | None = Field(default=None, max_length=20)
-    speed_kmh: float = Field(gt=0)
+    violation_type: ViolationType = "overspeed"
+    speed_kmh: float | None = Field(default=None, gt=0)
     speed_limit_kmh: float = Field(gt=0)
     violation_time: datetime | None = None
     video_source: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def require_speed_for_overspeed(self) -> "ViolationCreate":
+        """An overspeed violation must carry the measured speed."""
+        if self.violation_type == "overspeed" and self.speed_kmh is None:
+            raise ValueError("speed_kmh is required for overspeed violations")
+        return self
 
 
 class ViolationResponse(BaseModel):
@@ -29,7 +40,8 @@ class ViolationResponse(BaseModel):
     id: int
     track_id: int
     plate_number: str | None
-    speed_kmh: float
+    violation_type: str = "overspeed"
+    speed_kmh: float | None
     speed_limit_kmh: float
     violation_time: datetime
     video_source: str | None
@@ -59,6 +71,8 @@ class ViolationStatisticsResponse(BaseModel):
     violations_with_plate: int
     videos_analyzed: int
     latest_violation_time: datetime | None
+    overspeed_violations: int = 0
+    no_helmet_violations: int = 0
 
     @field_validator("latest_violation_time")
     @classmethod

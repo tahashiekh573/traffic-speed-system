@@ -17,24 +17,41 @@ logger = get_logger(__name__)
 
 @dataclass(frozen=True)
 class PlateInput:
+    """Frame, tracked vehicles and which of them are worth reading.
+
+    ``candidate_track_ids`` limits OCR to those tracks (for example only
+    overspeeding vehicles). ``None`` means every tracked vehicle.
+    """
+
     frame: np.ndarray
     tracks: list[TrackedObject]
     frame_index: int = 0
+    candidate_track_ids: frozenset[int] | None = None
 
 
 @dataclass(frozen=True)
 class PlateReading:
+    """A plate accepted for one tracked vehicle."""
+
     track_id: int
     plate_text: str
 
 
 @dataclass(frozen=True)
 class PlateOutput:
+    """All plates known for the vehicles in the current frame."""
+
     readings: list[PlateReading]
 
 
 class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
-    """Lightweight vehicle number plate OCR agent."""
+    """Read vehicle number plates with a bounded OCR budget per frame.
+
+    OCR is by far the slowest step on CPU, so each frame reads at most
+    ``OCR_MAX_PER_FRAME`` vehicles (largest boxes first), each vehicle is
+    retried at most ``OCR_MAX_ATTEMPTS_PER_TRACK`` times, at least
+    ``OCR_FRAME_INTERVAL`` frames apart, and accepted plates are cached.
+    """
 
     def __init__(
         self,
@@ -50,21 +67,35 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
                 languages=self.settings.ocr_language_list,
                 min_confidence=self.settings.ocr_min_confidence,
                 use_gpu=self.settings.ocr_use_gpu,
+                max_image_width=self.settings.ocr_max_crop_width,
             )
         )
 
-        # Run OCR at most once every configured interval.
-        self.ocr_frame_interval = max(
-            1,
-            int(self.settings.ocr_frame_interval),
-        )
+        self.ocr_frame_interval = max(1, int(self.settings.ocr_frame_interval))
+        self.max_per_frame = int(self.settings.ocr_max_per_frame)
+        self.max_attempts = int(self.settings.ocr_max_attempts_per_track)
+        self.min_box_height = int(self.settings.ocr_min_box_height)
 
         # Accept a valid plate after one OCR observation.
         self.minimum_votes = 1
 
         self._plate_cache: dict[int, str] = {}
         self._candidate_votes: dict[int, Counter] = {}
+        self._attempts: dict[int, int] = {}
+        self._last_attempt_frame: dict[int, int] = {}
         self._last_frame_index: int | None = None
+        # Best (largest) plate crop seen for every vehicle, so a plate can
+        # still be read after the vehicle is flagged - even off-screen.
+        self._best_crops: dict[int, tuple[float, np.ndarray, int]] = {}
+
+    def reset(self) -> None:
+        """Forget all per-video state before a new video starts."""
+        self._plate_cache.clear()
+        self._candidate_votes.clear()
+        self._attempts.clear()
+        self._last_attempt_frame.clear()
+        self._best_crops.clear()
+        self._last_frame_index = None
 
     @staticmethod
     def _crop_plate_region(
@@ -154,8 +185,93 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
 
         return normalized
 
-    def run(self, data: PlateInput) -> PlateOutput:
+    BEST_CROP_MAX_WIDTH = 480
+    BEST_CROP_TTL_FRAMES = 300
 
+    def _remember_crop(
+        self, frame: np.ndarray, track: TrackedObject, index: int
+    ) -> None:
+        """Keep the largest plate crop seen so far for this vehicle."""
+        height = track.bbox[3] - track.bbox[1]
+        stored = self._best_crops.get(track.track_id)
+
+        if stored is not None and stored[0] >= height:
+            self._best_crops[track.track_id] = (stored[0], stored[1], index)
+            return
+
+        crop = self._crop_plate_region(frame, track.bbox)
+        if crop is None:
+            return
+
+        if crop.shape[1] > self.BEST_CROP_MAX_WIDTH:
+            factor = self.BEST_CROP_MAX_WIDTH / crop.shape[1]
+            crop = cv2.resize(
+                crop, None, fx=factor, fy=factor, interpolation=cv2.INTER_AREA
+            )
+        else:
+            crop = crop.copy()
+
+        self._best_crops[track.track_id] = (height, crop, index)
+
+    def _forget_stale_crops(self, frame_index: int, keep: frozenset[int]) -> None:
+        """Drop crops of vehicles that left long ago and are not needed."""
+        stale = [
+            track_id
+            for track_id, (_, _, seen) in self._best_crops.items()
+            if frame_index - seen > self.BEST_CROP_TTL_FRAMES and track_id not in keep
+        ]
+        for track_id in stale:
+            del self._best_crops[track_id]
+
+    def _is_due(self, track_id: int, box_height: float, frame_index: int) -> bool:
+        """Return True when this vehicle should be OCR'd now."""
+        if track_id in self._plate_cache:
+            return False
+
+        if self._attempts.get(track_id, 0) >= self.max_attempts:
+            return False
+
+        last = self._last_attempt_frame.get(track_id)
+        if last is not None and frame_index - last < self.ocr_frame_interval:
+            return False
+
+        return box_height >= self.min_box_height
+
+    def _read_plate(self, track_id: int, crop: np.ndarray) -> str | None:
+        """Run OCR on a stored crop and return the best plate so far."""
+        enhanced = self._enhance_crop(crop)
+
+        if enhanced is None:
+            return None
+
+        try:
+            candidates = self.ocr_client.read_text(enhanced)
+        except Exception as exc:  # OCR failures must not stop the video.
+            logger.warning("OCR failed for track %s: %s", track_id, exc)
+            return None
+
+        valid = {
+            plate
+            for candidate in candidates
+            if (plate := self._normalize_plate(candidate)) is not None
+        }
+
+        if not valid:
+            return None
+
+        votes = self._candidate_votes.setdefault(track_id, Counter())
+        for plate in valid:
+            votes[plate] += 1
+
+        best_plate, best_votes = max(
+            votes.items(),
+            key=lambda item: (item[1], len(item[0])),
+        )
+
+        return best_plate if best_votes >= self.minimum_votes else None
+
+    def run(self, data: PlateInput) -> PlateOutput:
+        """Return known plates and OCR a few due vehicles (largest first)."""
         if not isinstance(data.frame, np.ndarray):
             raise TypeError("Frame must be a NumPy array.")
 
@@ -166,107 +282,47 @@ class PlateAgent(BaseAgent[PlateInput, PlateOutput]):
             self._last_frame_index is not None
             and data.frame_index <= self._last_frame_index
         ):
-            self._plate_cache.clear()
-            self._candidate_votes.clear()
+            self.reset()
 
         self._last_frame_index = data.frame_index
-
-        active_track_ids = {
-            track.track_id for track in data.tracks
-        }
-
-        self._plate_cache = {
-            track_id: plate
-            for track_id, plate in self._plate_cache.items()
-            if track_id in active_track_ids
-        }
-
-        self._candidate_votes = {
-            track_id: votes
-            for track_id, votes in self._candidate_votes.items()
-            if track_id in active_track_ids
-        }
-
-        should_run_ocr = (
-            data.frame_index % self.ocr_frame_interval == 0
-        )
-
-        readings = []
+        candidates = data.candidate_track_ids
 
         for track in data.tracks:
+            if track.track_id not in self._plate_cache:
+                self._remember_crop(data.frame, track, data.frame_index)
 
-            track_id = track.track_id
+        # Vehicles that may be read now: visible ones, plus flagged vehicles
+        # that already left the frame but whose best crop is stored.
+        pool = {track.track_id for track in data.tracks}
+        if candidates is not None:
+            pool = (pool & candidates) | (candidates & self._best_crops.keys())
 
-            cached_plate = self._plate_cache.get(track_id)
+        due = [
+            (track_id, self._best_crops[track_id])
+            for track_id in pool
+            if track_id in self._best_crops
+            and self._is_due(track_id, self._best_crops[track_id][0], data.frame_index)
+        ]
+        due.sort(key=lambda item: item[1][0], reverse=True)
 
-            if cached_plate is not None:
-                readings.append(
-                    PlateReading(
-                        track_id=track_id,
-                        plate_text=cached_plate,
-                    )
-                )
-                continue
+        newly_read: list[PlateReading] = []
+        for track_id, (_, crop, _) in due[: self.max_per_frame]:
+            self._attempts[track_id] = self._attempts.get(track_id, 0) + 1
+            self._last_attempt_frame[track_id] = data.frame_index
 
-            if not should_run_ocr:
-                continue
+            plate = self._read_plate(track_id, crop)
+            if plate is not None:
+                self._plate_cache[track_id] = plate
+                self._best_crops.pop(track_id, None)
+                newly_read.append(PlateReading(track_id, plate))
 
-            crop = self._crop_plate_region(
-                data.frame,
-                track.bbox,
-            )
+        self._forget_stale_crops(data.frame_index, candidates or frozenset())
 
-            if crop is None:
-                continue
-
-            enhanced = self._enhance_crop(crop)
-
-            if enhanced is None:
-                continue
-
-            try:
-                candidates = self.ocr_client.read_text(enhanced)
-            except Exception as exc:  # OCR failures must not stop the video.
-                logger.warning(
-                    "OCR failed for track %s: %s", track_id, exc
-                )
-                continue
-
-            valid_candidates = {
-                plate
-                for candidate in candidates
-                if (
-                    plate := self._normalize_plate(candidate)
-                ) is not None
-            }
-
-            if not valid_candidates:
-                continue
-
-            votes = self._candidate_votes.setdefault(
-                track_id,
-                Counter(),
-            )
-
-            for plate in valid_candidates:
-                votes[plate] += 1
-
-            best_plate, best_votes = max(
-                votes.items(),
-                key=lambda item: (
-                    item[1],
-                    len(item[0]),
-                ),
-            )
-
-            if best_votes >= self.minimum_votes:
-                self._plate_cache[track_id] = best_plate
-
-                readings.append(
-                    PlateReading(
-                        track_id=track_id,
-                        plate_text=best_plate,
-                    )
-                )
-
+        visible = {track.track_id for track in data.tracks}
+        readings = [
+            PlateReading(track_id, plate)
+            for track_id, plate in self._plate_cache.items()
+            if track_id in visible
+        ]
+        readings += [r for r in newly_read if r.track_id not in visible]
         return PlateOutput(readings=readings)

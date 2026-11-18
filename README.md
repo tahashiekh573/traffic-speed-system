@@ -9,7 +9,7 @@
 ![OpenCV](https://img.shields.io/badge/OpenCV-Video-green?logo=opencv&logoColor=white)
 ![EasyOCR](https://img.shields.io/badge/EasyOCR-Plates-red)
 ![React](https://img.shields.io/badge/React-Dashboard-61dafb?logo=react&logoColor=black)
-![Tests](https://img.shields.io/badge/Tests-58%20Passed-brightgreen)
+![Tests](https://img.shields.io/badge/Tests-76%20Passed-brightgreen)
 
 > This is a computer vision project, **not** an LLM project. The voice assistant is rule-based and runs in the browser; every number it says comes from the backend API.
 
@@ -74,16 +74,18 @@ Stop the server with **Ctrl+C** in the console window.
 | Feature | Description |
 |---|---|
 | Video upload | Drag-and-drop MP4 / AVI / MOV / MKV upload with size and format validation |
-| Background processing | Videos are processed in a background job with live progress polling |
+| Background processing | Videos are processed in a background job with upload %, live progress and a **live annotated preview** |
+| Fast on CPU | Vision runs ~10× per video second, models load once at startup, OCR only for speeders (a 4 s 1080p clip: 168 s → 23 s) |
 | Vehicle detection | YOLOv8, restricted to configurable vehicle classes (car, motorcycle, bus, truck) |
 | Tracking | ByteTrack keeps a stable ID per vehicle; pedestrians and other classes are ignored |
 | Speed estimation | Time between two virtual lines with sub-frame crossing interpolation |
-| Plate recognition | EasyOCR on the lower vehicle crop with CLAHE enhancement and plate validation |
+| Plate recognition | EasyOCR on the lower vehicle crop with CLAHE enhancement and plate validation, with a per-frame OCR budget |
 | Late plate back-fill | A plate read *after* a violation was saved is written back to that violation |
-| Violation records | Overspeeding vehicles are stored in SQLite automatically |
+| Violation records | Overspeeding vehicles and riders without a helmet are stored in SQLite automatically (`violation_type`) |
+| Helmet check | `HelmetAgent` checks the area above each motorcycle with a YOLO helmet model; riders without a helmet get a red box, a ticket and a plate read (needs `weights/helmet.pt`) |
 | Annotated video | Boxes, IDs, speeds, plates, speed lines and a live HUD, encoded as H.264 |
 | Dashboard | Speed board with limit marker, plate cards, violation tickets, agent pipeline view |
-| Voice assistant | "Raftaar" robot that listens, talks and answers questions about the result in English, Roman Urdu or Urdu script |
+| Voice assistant | "Raftaar" robot that listens, talks and answers questions in English, Roman Urdu or Urdu script; tolerates typos, multi-part questions and answers live while processing |
 | Statistics | All-time violation statistics endpoint |
 | Observability | Request-ID header, access logs and JSON error handling middleware |
 | Configuration | Everything configurable through environment variables |
@@ -152,10 +154,12 @@ The frame orchestrator uses the TrackingAgent's YOLO `track()` call for detectio
 
 1. **Upload.** `POST /api/v1/videos/process` validates the extension and size, streams the file to `UPLOAD_DIR` and returns a `processing_id` with HTTP 202.
 2. **Background job.** `VideoJobService` runs the pipeline in a daemon thread and updates progress in the in-memory job store.
-3. **Per frame.** `FrameOrchestrator` calls:
+3. **Every few frames** (`TARGET_PROCESS_FPS`, default ~10 per video second) `FrameOrchestrator` calls:
    - `TrackingAgent`, which returns tracked vehicles with stable IDs;
    - `SpeedAgent`, which returns a speed once a vehicle has crossed both lines;
-   - `PlateAgent`, which returns plate readings (OCR every `OCR_FRAME_INTERVAL` frames, then cached per track).
+   - `PlateAgent`, which reads plates only for the vehicles the orchestrator selects (overspeeding ones by default), within a per-frame OCR budget, and caches them per track.
+
+   The frames in between are written with the latest annotations. Every second of video a small JPEG preview and live counts are published for the dashboard.
 4. **Aggregation.** The service collects vehicle types, speeds and plates, saves a violation the first time a vehicle exceeds `SPEED_LIMIT_KMH`, and back-fills the plate if it is read later.
 5. **Annotation.** Every frame is drawn with boxes, labels, plates, speed lines and a HUD, then FFmpeg converts the result to browser-compatible H.264.
 6. **Result.** The status endpoint returns the final result. The dashboard shows it and Raftaar announces it.
@@ -182,9 +186,23 @@ The robot in the bottom-right corner is an animated SVG whose face shows its sta
 | Auto announcements | Speaks when a video is selected, when processing starts, when it finishes and if it fails |
 | Commands | "start / shuru karo", "upload", "show video / video dikhao", "stop / chup" |
 
-Example questions: *"result batao"*, *"kitni violations?"*, *"sab se tez gaari"*, *"average speed"*, *"number plates"*, *"how many cars"*, *"speed limit"*, *"total history"*, or a plate number such as *"LEA1234"*.
+Example questions: *"result batao"* (also *"relut"* / *"reslut"*), *"kitni violations?"*, *"sab se tez gaari"*, *"slowest car"*, *"80 se tez kitni gaariyan"*, *"gaari 7"*, a plate such as *"LEA1234"*, *"kitne trucks"*, *"kitne fisad tez the"*, *"bina plate wali gaariyan"*, *"aakhri violation"*, *"kitna time laga"*, *"speed kaise naapi"*, *"what is ByteTrack"*, *"total history"*, or two at once: *"result batao aur sab se tez gaari"*. While a video is still processing it answers with the live counts.
 
 The assistant logic lives in `frontend/src/assistant/assistantBrain.js`. It matches keywords to intents and builds answers from the API result only. It contains no language model or prompt.
+
+## Helmet model
+
+The helmet check uses stage 2 of [2vhoc/helmet-detection-traffic](https://huggingface.co/2vhoc/helmet-detection-traffic): a YOLO26-large model trained on motorcyclist crops, exported to ONNX at 320 px, classes `helmet`, `nohelmet`, `licenseplate` (Ultralytics AGPL-3.0). Model weights are not committed (`weights/` is git-ignored).
+
+```bash
+# 1. model (99 MB) -> weights/helmet.onnx
+curl -L -o weights/helmet.onnx https://huggingface.co/2vhoc/helmet-detection-traffic/resolve/main/stage2/mu_bien_so_stage2.onnx
+# 2. ONNX runtime
+.venv/Scripts/python -m pip install -e ".[helmet]"      # or: pip install onnxruntime
+# 3. restart run.bat
+```
+
+The ONNX file is used instead of the `.pt` file because ONNX does not execute code when loaded. If `onnxruntime` is missing, the helmet check stays off with a clear message; the app never installs packages by itself.
 
 ## Frontend development
 
@@ -269,13 +287,29 @@ All settings come from environment variables or `.env` (see `.env.example`). Rel
 | `CONFIDENCE_THRESHOLD` | `0.4` | Detection / tracking confidence |
 | `VEHICLE_CLASSES` | `car,motorcycle,bus,truck` | COCO classes treated as vehicles |
 | `SPEED_LIMIT_KMH` | `60` | Speed limit for violations |
-| `LINE_1_Y` | `300` | First virtual line (pixel row) |
-| `LINE_2_Y` | `500` | Second virtual line; must be greater than `LINE_1_Y` |
+| `LINE_1_Y` | `0.55` | First virtual line. `<= 1` = fraction of the frame height (works for any resolution), `> 1` = pixel row |
+| `LINE_2_Y` | `0.80` | Second virtual line; must be greater than `LINE_1_Y` |
 | `REAL_DISTANCE_METERS` | `10` | Real road distance between the lines |
 | `OCR_LANGUAGES` | `en` | Comma-separated EasyOCR languages |
 | `OCR_FRAME_INTERVAL` | `10` | Run OCR every N frames |
 | `OCR_MIN_CONFIDENCE` | `0.25` | Minimum OCR confidence for a candidate |
 | `OCR_USE_GPU` | `false` | Use GPU for EasyOCR |
+| `OCR_MODE` | `overspeeding` | `overspeeding` = read plates of speeders only (fast), `all` = every vehicle |
+| `OCR_MAX_PER_FRAME` | `2` | Maximum vehicles OCR'd in one frame (largest first) |
+| `OCR_MAX_ATTEMPTS_PER_TRACK` | `6` | OCR retries per vehicle before giving up |
+| `OCR_MIN_BOX_HEIGHT` | `60` | Skip OCR for vehicles smaller than this (pixels) |
+| `OCR_MAX_CROP_WIDTH` | `360` | Plate crops are shrunk to this width before OCR |
+| `YOLO_IMAGE_SIZE` | `640` | YOLO inference size |
+| `HELMET_DETECTION_ENABLED` | `true` | Run the helmet check when a model is present |
+| `HELMET_MODEL_PATH` | `weights/helmet.onnx` | YOLO helmet / no-helmet model (`.onnx` needs `onnxruntime`) |
+| `HELMET_CLASS_NAMES` | `helmet,with helmet,...` | Model class names meaning "helmet worn" (case, spaces, `-`, `_` ignored) |
+| `NO_HELMET_CLASS_NAMES` | `no helmet,without helmet,head,...` | Model class names meaning "no helmet" |
+| `HELMET_VOTES_REQUIRED` | `3` | Checks per motorcycle before deciding |
+| `TARGET_PROCESS_FPS` | `10` | Run the vision pipeline about this many times per video second (`0` = every frame) |
+| `TORCH_THREADS` | `0` | CPU threads for PyTorch (`0` = all cores) |
+| `PRELOAD_MODELS` | `true` | Load YOLO and EasyOCR at startup so the first upload starts immediately |
+| `OUTPUT_MAX_WIDTH` | `1280` | Width of the annotated video and live preview (`0` = original) |
+| `PREVIEW_INTERVAL_SECONDS` | `1.0` | How often (video seconds) the live preview frame is refreshed |
 | `UPLOAD_DIR` | `data/videos` | Temporary upload folder |
 | `MAX_UPLOAD_SIZE_MB` | `500` | Upload size limit |
 | `ALLOWED_VIDEO_EXTENSIONS` | `.mp4,.avi,.mov,.mkv` | Accepted upload formats |
@@ -364,6 +398,7 @@ Base URL: `http://localhost:8000`. Every response carries an `X-Request-ID` head
 | GET | `/api/v1/config` | Public pipeline settings (limit, lines, upload rules) |
 | POST | `/api/v1/videos/process` | Upload a video (multipart `file`); returns `202` + `processing_id` |
 | GET | `/api/v1/videos/{id}/status` | Progress, error and final result |
+| GET | `/api/v1/videos/{id}/preview` | Latest annotated frame as JPEG while processing (`409` before the first frame) |
 | GET | `/api/v1/videos/{id}/output` | Annotated H.264 MP4 (`409` until complete) |
 | POST | `/api/v1/violations` | Create a violation manually |
 | GET | `/api/v1/violations?limit=&offset=` | Paginated violations |
@@ -428,7 +463,7 @@ Repository operations: create, get by ID, list with pagination, count, update pl
 # 15. Testing and Code Quality
 
 ```bash
-pytest -q                 # 58 tests: unit + integration
+pytest -q                 # 76 tests: unit + integration
 ruff check app tests      # lint
 cd frontend && npm run lint && npm run build
 ```
@@ -439,7 +474,7 @@ Latest verification:
 
 | Check | Result |
 |---|---|
-| Pytest | 58 passed |
+| Pytest | 76 passed |
 | Ruff | All checks passed |
 | oxlint | No warnings |
 | Vite build | Successful |
@@ -449,8 +484,11 @@ Latest verification:
 
 # 16. Limitations
 
-- **Calibration.** Speed accuracy depends on correct line placement and real-world distance per camera.
-- **Processing speed.** CPU-only inference is slow for 1080p (roughly a minute or more per few seconds of video); a CUDA GPU helps significantly.
+- **Calibration.** Speed accuracy depends on correct line placement and `REAL_DISTANCE_METERS` per camera.
+- **Moving camera.** The two-line method needs a fixed camera. From a moving vehicle, speeds are relative to the camera, not real road speeds.
+- **Helmet model.** COCO YOLOv8 has no helmet class, so a separate model is used (see [Helmet model](#helmet-model)). Without it the helmet check is shown as off.
+- **Processing speed.** On CPU a 1080p video processes at roughly 4–5 video frames per second with the defaults. A CUDA GPU helps significantly; lowering `TARGET_PROCESS_FPS` or `YOLO_IMAGE_SIZE` trades accuracy for speed.
+- **One video at a time.** The models are shared, so further uploads wait in the `queued` state.
 - **OCR.** Small, blurred or angled plates are often not readable.
 - **Job store.** Job progress is kept in memory, so a server restart forgets running jobs (saved violations stay in the database).
 - **Voice.** Speech recognition needs Chrome or Edge and microphone permission; available voices depend on the operating system.

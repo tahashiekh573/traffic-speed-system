@@ -8,10 +8,11 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
 from typing import Any, BinaryIO
 from uuid import uuid4
 
+import cv2
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -23,19 +24,26 @@ from app.core.exceptions import (
     VideoUploadTooLargeError,
 )
 from app.core.logging import get_logger
+from app.models.vehicle_violation import VIOLATION_NO_HELMET, VIOLATION_OVERSPEED
 from app.repositories.violation_repository import ViolationRepository
 from app.schemas.video import (
+    HelmetRecordResponse,
     PlateRecognitionResponse,
     SpeedRecordResponse,
     VideoProcessingResponse,
 )
 from app.schemas.violation import ViolationResponse
-from app.services.video_processing_service import VideoProcessingService
+from app.services.video_processing_service import (
+    LiveSnapshot,
+    VideoProcessingService,
+)
 from app.services.video_progress_manager import VideoJob, VideoProgressManager
 
 logger = get_logger(__name__)
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+PREVIEW_WIDTH = 960
+PREVIEW_JPEG_QUALITY = 72
 
 BackgroundRunner = Callable[[Callable[..., None], tuple], None]
 
@@ -68,7 +76,10 @@ class _JobResultCollector:
         self.vehicle_types: dict[int, str] = {}
         self.plates: dict[int, str] = {}
         self.speeds: dict[int, tuple[float, bool]] = {}
-        self.violations: dict[int, ViolationResponse] = {}
+        self.helmets: dict[int, tuple[bool, float]] = {}
+        # One record per (vehicle, violation type).
+        self.violations: dict[tuple[int, str], ViolationResponse] = {}
+        self.helmet_check_enabled = False
 
     def on_frame(self, output: Any) -> None:
         """Handle the orchestrator output of one frame."""
@@ -86,18 +97,50 @@ class _JobResultCollector:
         for measurement in _value(speed_output, "measurements", []) or []:
             self._record_speed(measurement)
 
+        helmet_output = _value(output, "helmet_output")
+        if helmet_output is not None:
+            self.helmet_check_enabled = True
+            for status in _value(helmet_output, "newly_decided", []) or []:
+                self._record_helmet(status)
+
     def _record_plate(self, track_id: int, plate: str) -> None:
         self.plates[track_id] = plate
 
-        # The plate is often readable only after the vehicle crossed
-        # the speed lines, so back-fill violations that have no plate.
-        violation = self.violations.get(track_id)
-        if violation is not None and violation.plate_number is None:
+        # The plate is often readable only after the violation was found,
+        # so back-fill this vehicle's violations that have no plate yet.
+        for key, violation in list(self.violations.items()):
+            if key[0] != track_id or violation.plate_number is not None:
+                continue
             updated = self.repository.update_plate(violation.id, plate)
             if updated is not None:
-                self.violations[track_id] = ViolationResponse.model_validate(
-                    updated
-                )
+                self.violations[key] = ViolationResponse.model_validate(updated)
+
+    def _save_violation(
+        self,
+        track_id: int,
+        violation_type: str,
+        speed_kmh: float | None,
+    ) -> None:
+        key = (track_id, violation_type)
+        if track_id <= 0 or key in self.violations:
+            return
+        violation = self.repository.create(
+            track_id=track_id,
+            plate_number=self.plates.get(track_id),
+            violation_type=violation_type,
+            speed_kmh=speed_kmh,
+            speed_limit_kmh=self.speed_limit_kmh,
+            video_source=self.video_source,
+        )
+        self.violations[key] = ViolationResponse.model_validate(violation)
+
+    def _record_helmet(self, status: Any) -> None:
+        track_id = int(status.track_id)
+        has_helmet = bool(status.has_helmet)
+        self.helmets[track_id] = (has_helmet, float(status.confidence))
+        if not has_helmet:
+            speed = self.speeds.get(track_id, (None, False))[0]
+            self._save_violation(track_id, VIOLATION_NO_HELMET, speed)
 
     def _record_speed(self, measurement: Any) -> None:
         track_id = int(measurement.track_id)
@@ -106,17 +149,8 @@ class _JobResultCollector:
 
         self.speeds[track_id] = (speed, overspeeding)
 
-        if not overspeeding or track_id <= 0 or track_id in self.violations:
-            return
-
-        violation = self.repository.create(
-            track_id=track_id,
-            plate_number=self.plates.get(track_id),
-            speed_kmh=speed,
-            speed_limit_kmh=self.speed_limit_kmh,
-            video_source=self.video_source,
-        )
-        self.violations[track_id] = ViolationResponse.model_validate(violation)
+        if overspeeding:
+            self._save_violation(track_id, VIOLATION_OVERSPEED, speed)
 
     def build_response(
         self,
@@ -153,6 +187,23 @@ class _JobResultCollector:
             speed_limit_kmh=self.speed_limit_kmh,
             violations_saved=len(self.violations),
             violations=list(self.violations.values()),
+            overspeed_violations=sum(
+                1 for _, kind in self.violations if kind == VIOLATION_OVERSPEED
+            ),
+            helmet_check_enabled=self.helmet_check_enabled,
+            motorcycles_checked=len(self.helmets),
+            no_helmet_violations=sum(
+                1 for _, kind in self.violations if kind == VIOLATION_NO_HELMET
+            ),
+            helmet_records=[
+                HelmetRecordResponse(
+                    track_id=track_id,
+                    has_helmet=has_helmet,
+                    confidence=confidence,
+                    plate_number=self.plates.get(track_id),
+                )
+                for track_id, (has_helmet, confidence) in sorted(self.helmets.items())
+            ],
             vehicles_tracked=len(self.vehicle_types),
             vehicle_types=dict(Counter(self.vehicle_types.values())),
             speed_records=speed_records,
@@ -187,6 +238,9 @@ class VideoJobService:
         self.session_factory = session_factory
         self.processing_service_factory = processing_service_factory
         self.background_runner = background_runner
+        # The vision models are shared, so videos are processed one at a
+        # time; later uploads wait in the "queued" state.
+        self._worker_lock = Lock()
 
     # ------------------------------------------------------------------
     # Upload handling
@@ -268,6 +322,41 @@ class VideoJobService:
         original_filename: str,
     ) -> None:
         """Process a stored upload and record its result in the job store."""
+        with self._worker_lock:
+            self._run_job_locked(processing_id, video_path, original_filename)
+
+    def _store_snapshot(self, processing_id: str, snapshot: LiveSnapshot) -> None:
+        """Keep a small JPEG of the latest annotated frame plus live counts."""
+        frame = snapshot.frame
+        if frame.shape[1] > PREVIEW_WIDTH:
+            scale = PREVIEW_WIDTH / frame.shape[1]
+            frame = cv2.resize(
+                frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA
+            )
+
+        ok, encoded = cv2.imencode(
+            ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, PREVIEW_JPEG_QUALITY]
+        )
+
+        self.progress_manager.update(
+            processing_id,
+            preview_jpeg=encoded.tobytes() if ok else None,
+            live={
+                "vehicles_seen": snapshot.vehicles_seen,
+                "violations": snapshot.violations,
+                "plates": snapshot.plates,
+                "no_helmet": snapshot.no_helmet,
+                "video_seconds": round(snapshot.timestamp_seconds, 1),
+                "preview_available": bool(ok),
+            },
+        )
+
+    def _run_job_locked(
+        self,
+        processing_id: str,
+        video_path: Path,
+        original_filename: str,
+    ) -> None:
         db = self.session_factory()
         output_path = self.output_path_for(processing_id)
         started = time.perf_counter()
@@ -295,6 +384,9 @@ class VideoJobService:
                 output_video_path=output_path,
                 on_frame_processed=collector.on_frame,
                 on_progress=on_progress,
+                on_live_snapshot=lambda snap: self._store_snapshot(
+                    processing_id, snap
+                ),
             )
 
             if not output_path.is_file() or output_path.stat().st_size == 0:
@@ -346,6 +438,15 @@ class VideoJobService:
             raise ResourceNotFoundError("Processing job not found.")
 
         return job
+
+    def get_preview(self, processing_id: str) -> bytes:
+        """Return the latest annotated frame of a job as JPEG bytes."""
+        job = self.get_job(processing_id)
+
+        if not job.preview_jpeg:
+            raise JobNotReadyError("No preview frame is available yet.")
+
+        return job.preview_jpeg
 
     def get_output_video(self, processing_id: str) -> Path:
         """Return the annotated video path of a completed job."""

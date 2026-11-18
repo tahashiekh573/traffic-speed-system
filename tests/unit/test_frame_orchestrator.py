@@ -110,3 +110,61 @@ def test_orchestrator_rejects_empty_frame():
                 timestamp_seconds=1.0,
             )
         )
+
+
+def test_orchestrator_reads_plates_of_overspeeding_vehicles_only():
+    from app.agents.speed_agent import SpeedMeasurement
+    from app.core.config import Settings
+
+    tracking_agent = FakeTrackingAgent()
+    speed_agent = FakeSpeedAgent()
+    plate_agent = FakePlateAgent()
+
+    orchestrator = FrameOrchestrator(
+        tracking_agent=tracking_agent,
+        speed_agent=speed_agent,
+        plate_agent=plate_agent,
+        settings=Settings(ocr_mode="overspeeding"),
+    )
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    orchestrator.process_frame(FrameProcessingInput(frame=frame, timestamp_seconds=0.0))
+    assert plate_agent.received_input.candidate_track_ids == frozenset()
+
+    speed_agent.output = SpeedOutput(
+        measurements=[
+            SpeedMeasurement(track_id=1, speed_kmh=90.0, is_overspeeding=True)
+        ]
+    )
+    orchestrator.process_frame(
+        FrameProcessingInput(frame=frame, timestamp_seconds=0.1, frame_index=1)
+    )
+    assert plate_agent.received_input.candidate_track_ids == frozenset({1})
+
+    orchestrator.reset()
+    speed_agent.output = SpeedOutput(measurements=[])
+    orchestrator.process_frame(
+        FrameProcessingInput(frame=frame, timestamp_seconds=0.2, frame_index=2)
+    )
+    assert plate_agent.received_input.candidate_track_ids == frozenset()
+
+
+def test_orchestrator_reads_all_plates_in_all_mode():
+    from app.core.config import Settings
+
+    plate_agent = FakePlateAgent()
+    orchestrator = FrameOrchestrator(
+        tracking_agent=FakeTrackingAgent(),
+        speed_agent=FakeSpeedAgent(),
+        plate_agent=plate_agent,
+        settings=Settings(ocr_mode="all"),
+    )
+
+    orchestrator.process_frame(
+        FrameProcessingInput(
+            frame=np.zeros((480, 640, 3), dtype=np.uint8),
+            timestamp_seconds=0.0,
+        )
+    )
+
+    assert plate_agent.received_input.candidate_track_ids is None

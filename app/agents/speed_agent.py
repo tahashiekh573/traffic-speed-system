@@ -11,6 +11,8 @@ from app.core.config import Settings, get_settings
 class SpeedInput:
     tracks: list[TrackedObject]
     timestamp_seconds: float
+    # Needed when the lines are configured as fractions of the height.
+    frame_height: int | None = None
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,7 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
                 "Speed measurement lines must be different."
             )
 
-        self._line_positions = {
+        self._line_settings = {
             1: line1,
             2: line2,
         }
@@ -53,6 +55,19 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
         ] = {}
 
         self._completed_tracks: set[int] = set()
+
+    def reset(self) -> None:
+        """Forget all per-video state before a new video starts."""
+        self._previous_observations.clear()
+        self._crossings.clear()
+        self._completed_tracks.clear()
+
+    @staticmethod
+    def _to_pixels(value: float, frame_height: int | None) -> float:
+        """Fractions (<= 1) are relative to the frame height."""
+        if value <= 1 and frame_height:
+            return value * frame_height
+        return value
 
     @staticmethod
     def _crossing_time(
@@ -120,6 +135,10 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
             )
 
         measurements = []
+        line_positions = {
+            number: self._to_pixels(value, data.frame_height)
+            for number, value in self._line_settings.items()
+        }
 
         for track in data.tracks:
             track_id = int(track.track_id)
@@ -156,9 +175,7 @@ class SpeedAgent(BaseAgent[SpeedInput, SpeedOutput]):
                 {},
             )
 
-            for line_number, line_y in (
-                self._line_positions.items()
-            ):
+            for line_number, line_y in line_positions.items():
                 crossing_time = self._crossing_time(
                     previous_y=previous_y,
                     current_y=current_y,

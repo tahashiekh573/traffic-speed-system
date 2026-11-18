@@ -1,3 +1,4 @@
+"""Ultralytics YOLOv8 implementation of the detector client."""
 
 import numpy as np
 from ultralytics import YOLO
@@ -17,6 +18,7 @@ class YOLODetectorClient:
 
         self.model_path = self.settings.resolved_yolo_model_path
         self.confidence_threshold = self.settings.confidence_threshold
+        self.image_size = self.settings.yolo_image_size
 
         if not self.model_path.is_file():
             raise FileNotFoundError(
@@ -38,6 +40,7 @@ class YOLODetectorClient:
         results = self.model.predict(
             source=frame,
             conf=self.confidence_threshold,
+            imgsz=self.image_size,
             verbose=False,
         )
 

@@ -11,8 +11,12 @@ def utc_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+VIOLATION_OVERSPEED = "overspeed"
+VIOLATION_NO_HELMET = "no_helmet"
+
+
 class VehicleViolation(Base):
-    """Store detected vehicle speed violations."""
+    """Store detected traffic violations (overspeeding or riding without a helmet)."""
 
     __tablename__ = "vehicle_violations"
 
@@ -34,9 +38,18 @@ class VehicleViolation(Base):
         index=True,
     )
 
-    speed_kmh: Mapped[float] = mapped_column(
-        Float,
+    violation_type: Mapped[str] = mapped_column(
+        String(20),
         nullable=False,
+        default=VIOLATION_OVERSPEED,
+        server_default=VIOLATION_OVERSPEED,
+        index=True,
+    )
+
+    # Unknown for a helmet violation when the speed was not measured.
+    speed_kmh: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
     )
 
     speed_limit_kmh: Mapped[float] = mapped_column(

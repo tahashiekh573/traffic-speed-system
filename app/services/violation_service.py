@@ -13,6 +13,7 @@ class ViolationService:
         return self.repository.create(
             track_id=data.track_id,
             plate_number=data.plate_number,
+            violation_type=data.violation_type,
             speed_kmh=data.speed_kmh,
             speed_limit_kmh=data.speed_limit_kmh,
             violation_time=data.violation_time,

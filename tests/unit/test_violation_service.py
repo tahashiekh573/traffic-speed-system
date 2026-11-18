@@ -27,6 +27,7 @@ def test_create_violation():
     repository.create.assert_called_once_with(
         track_id=10,
         plate_number="ABC123",
+        violation_type="overspeed",
         speed_kmh=85.5,
         speed_limit_kmh=60.0,
         violation_time=datetime(2026, 10, 30, 12, 0),

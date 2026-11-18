@@ -47,11 +47,18 @@ class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
         self.detector = detector or YOLODetectorClient(self.settings)
         self.model = self.detector.model
         self.vehicle_classes = self.settings.vehicle_class_names
-        self.confidence_threshold = getattr(
+        self.image_size = getattr(
             self.detector,
-            "confidence_threshold",
-            self.settings.confidence_threshold,
+            "image_size",
+            self.settings.yolo_image_size,
         )
+
+    def reset(self) -> None:
+        """Clear ByteTrack state so a new video starts with fresh IDs."""
+        predictor = getattr(self.model, "predictor", None)
+        for tracker in getattr(predictor, "trackers", None) or []:
+            if hasattr(tracker, "reset"):
+                tracker.reset()
 
     @staticmethod
     def _to_list(value: Any) -> list:
@@ -79,7 +86,9 @@ class TrackingAgent(BaseAgent[TrackingInput, TrackingOutput]):
             source=data.frame,
             persist=True,
             tracker="bytetrack.yaml",
-            conf=self.confidence_threshold,
+            # No conf here on purpose: ByteTrack needs the low-confidence
+            # detections (Ultralytics uses 0.1 in track mode) to keep IDs.
+            imgsz=self.image_size,
             verbose=False,
         )
 

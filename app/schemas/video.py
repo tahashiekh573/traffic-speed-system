@@ -22,6 +22,15 @@ class SpeedRecordResponse(BaseModel):
     plate_number: str | None = None
 
 
+class HelmetRecordResponse(BaseModel):
+    """Helmet decision for one motorcycle."""
+
+    track_id: int
+    has_helmet: bool
+    confidence: float
+    plate_number: str | None = None
+
+
 class VideoProcessingResponse(BaseModel):
     """Final video processing result."""
 
@@ -37,6 +46,13 @@ class VideoProcessingResponse(BaseModel):
 
     violations_saved: int
     violations: list[ViolationResponse]
+    overspeed_violations: int = 0
+
+    # Helmet check (motorcycle riders)
+    helmet_check_enabled: bool = False
+    motorcycles_checked: int = 0
+    no_helmet_violations: int = 0
+    helmet_records: list[HelmetRecordResponse] = Field(default_factory=list)
 
     # Vehicle tracking and speed results
     vehicles_tracked: int = 0
@@ -55,6 +71,17 @@ class VideoProcessingResponse(BaseModel):
     output_video_url: str | None = None
 
 
+class LiveStatsResponse(BaseModel):
+    """Running counts while a video is still being processed."""
+
+    vehicles_seen: int = 0
+    violations: int = 0
+    plates: int = 0
+    no_helmet: int = 0
+    video_seconds: float = 0.0
+    preview_available: bool = False
+
+
 class VideoProcessingStatusResponse(BaseModel):
     """Video processing status and final result."""
 
@@ -65,4 +92,5 @@ class VideoProcessingStatusResponse(BaseModel):
     total_frames: int
     progress_percent: float
     error: str | None = None
+    live: LiveStatsResponse | None = None
     result: VideoProcessingResponse | None = None

@@ -3,7 +3,11 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.vehicle_violation import VehicleViolation
+from app.models.vehicle_violation import (
+    VIOLATION_NO_HELMET,
+    VIOLATION_OVERSPEED,
+    VehicleViolation,
+)
 
 
 class ViolationRepository:
@@ -16,16 +20,18 @@ class ViolationRepository:
         self,
         *,
         track_id: int,
-        speed_kmh: float,
+        speed_kmh: float | None,
         speed_limit_kmh: float,
         plate_number: str | None = None,
         violation_time: datetime | None = None,
         video_source: str | None = None,
+        violation_type: str = VIOLATION_OVERSPEED,
     ) -> VehicleViolation:
         """Create and save a vehicle violation."""
         violation = VehicleViolation(
             track_id=track_id,
             plate_number=plate_number,
+            violation_type=violation_type,
             speed_kmh=speed_kmh,
             speed_limit_kmh=speed_limit_kmh,
             video_source=video_source,
@@ -105,11 +111,24 @@ class ViolationRepository:
             func.count(VehicleViolation.plate_number),
             func.count(func.distinct(VehicleViolation.video_source)),
             func.max(VehicleViolation.violation_time),
+            func.count(VehicleViolation.id).filter(
+                VehicleViolation.violation_type == VIOLATION_OVERSPEED
+            ),
+            func.count(VehicleViolation.id).filter(
+                VehicleViolation.violation_type == VIOLATION_NO_HELMET
+            ),
         )
 
-        total, average, maximum, with_plate, videos, latest = (
-            self.db.execute(statement).one()
-        )
+        (
+            total,
+            average,
+            maximum,
+            with_plate,
+            videos,
+            latest,
+            overspeed,
+            no_helmet,
+        ) = self.db.execute(statement).one()
 
         return {
             "total_violations": int(total or 0),
@@ -122,4 +141,6 @@ class ViolationRepository:
             "violations_with_plate": int(with_plate or 0),
             "videos_analyzed": int(videos or 0),
             "latest_violation_time": latest,
+            "overspeed_violations": int(overspeed or 0),
+            "no_helmet_violations": int(no_helmet or 0),
         }

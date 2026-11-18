@@ -23,18 +23,54 @@ class Settings(BaseSettings):
 
     # Speed Detection
     speed_limit_kmh: PositiveFloat = 60.0
-    line_1_y: int = Field(default=300, ge=0)
-    line_2_y: int = Field(default=500, ge=0)
+    # Speed lines: a value <= 1 is a fraction of the frame height
+    # (0.55 = 55% down the frame) so they fit any resolution;
+    # a value > 1 is an absolute pixel row.
+    line_1_y: float = Field(default=0.55, ge=0)
+    line_2_y: float = Field(default=0.80, ge=0)
     real_distance_meters: PositiveFloat = 10.0
+
+    yolo_image_size: int = Field(default=640, ge=160, le=1920)
 
     # Tracking Configuration
     vehicle_classes: str = "car,motorcycle,bus,truck"
+
+    # Performance
+    # Run the vision pipeline at about this many frames per second of video
+    # (0 = every frame). Skipped frames reuse the latest annotations.
+    target_process_fps: float = Field(default=10.0, ge=0.0)
+    torch_threads: int = Field(default=0, ge=0)  # 0 = all CPU cores
+    preload_models: bool = True
+    output_max_width: int = Field(default=1280, ge=0)  # 0 = original size
+    preview_interval_seconds: float = Field(default=1.0, gt=0.0)
 
     # OCR Configuration
     ocr_languages: str = "en"
     ocr_frame_interval: int = Field(default=10, ge=1)
     ocr_min_confidence: float = Field(default=0.25, ge=0.0, le=1.0)
     ocr_use_gpu: bool = False
+    # "overspeeding" = read plates of speeders only (fast), "all" = every vehicle
+    ocr_mode: str = "overspeeding"
+    ocr_max_per_frame: int = Field(default=2, ge=1)
+    ocr_max_attempts_per_track: int = Field(default=6, ge=1)
+    ocr_min_box_height: int = Field(default=60, ge=0)
+    ocr_max_crop_width: int = Field(default=360, ge=64)
+
+    # Helmet check (needs a helmet detection model, see README)
+    helmet_detection_enabled: bool = True
+    helmet_model_path: Path = Path("weights/helmet.onnx")
+    helmet_confidence: float = Field(default=0.35, gt=0.0, le=1.0)
+    # Model class names meaning "rider wears a helmet" / "rider has no helmet".
+    helmet_class_names: str = "helmet,with helmet,with_helmet,withhelmet"
+    no_helmet_class_names: str = (
+        "no helmet,no-helmet,no_helmet,without helmet,without_helmet,nohelmet,head"
+    )
+    helmet_rider_classes: str = "motorcycle"
+    helmet_image_size: int = Field(default=320, ge=96, le=1280)
+    helmet_votes_required: int = Field(default=3, ge=1)
+    helmet_frame_interval: int = Field(default=3, ge=1)
+    helmet_max_per_frame: int = Field(default=4, ge=1)
+    helmet_min_box_height: int = Field(default=50, ge=0)
 
     # Video Upload
     upload_dir: Path = Path("data/videos")
@@ -78,6 +114,15 @@ class Settings(BaseSettings):
 
         return normalized
 
+    @field_validator("ocr_mode")
+    @classmethod
+    def validate_ocr_mode(cls, value: str) -> str:
+        """Allow only the supported OCR modes."""
+        normalized = value.strip().lower()
+        if normalized not in {"overspeeding", "all"}:
+            raise ValueError("OCR_MODE must be 'overspeeding' or 'all'")
+        return normalized
+
     @field_validator("line_2_y")
     @classmethod
     def validate_line_positions(cls, value: int, info) -> int:
@@ -117,6 +162,26 @@ class Settings(BaseSettings):
         """Return the allowed CORS origins."""
         return self._split_csv(self.cors_origins)
 
+    @staticmethod
+    def line_to_pixels(value: float, frame_height: int | None) -> float:
+        """Convert a configured line position into a pixel row."""
+        if value <= 1 and frame_height:
+            return value * frame_height
+        return float(value)
+
+    def line_rows(self, frame_height: int | None) -> tuple[float, float]:
+        """Return both speed-line rows in pixels for a frame height."""
+        return (
+            self.line_to_pixels(self.line_1_y, frame_height),
+            self.line_to_pixels(self.line_2_y, frame_height),
+        )
+
+    def frame_stride(self, fps: float) -> int:
+        """Return how many video frames to advance per pipeline run."""
+        if self.target_process_fps <= 0 or fps <= 0:
+            return 1
+        return max(1, round(fps / self.target_process_fps))
+
     @property
     def max_upload_size_bytes(self) -> int:
         """Return the upload limit in bytes."""
@@ -138,6 +203,34 @@ class Settings(BaseSettings):
     def resolved_upload_dir(self) -> Path:
         """Return the absolute upload directory."""
         return self.resolve_path(self.upload_dir)
+
+    @property
+    def resolved_helmet_model_path(self) -> Path:
+        """Return the absolute helmet model path."""
+        return self.resolve_path(self.helmet_model_path)
+
+    @property
+    def helmet_labels(self) -> set[str]:
+        """Normalised model labels that mean 'helmet worn'."""
+        names = self._split_csv(self.helmet_class_names)
+        return {self.normalize_label(x) for x in names}
+
+    @property
+    def no_helmet_labels(self) -> set[str]:
+        """Normalised model labels that mean 'no helmet'."""
+        return {
+            self.normalize_label(x) for x in self._split_csv(self.no_helmet_class_names)
+        }
+
+    @property
+    def helmet_rider_class_names(self) -> set[str]:
+        """Vehicle classes whose riders are checked for helmets."""
+        return {x.lower() for x in self._split_csv(self.helmet_rider_classes)}
+
+    @staticmethod
+    def normalize_label(label: str) -> str:
+        """Lowercase a class name and drop spaces, dashes and underscores."""
+        return "".join(ch for ch in label.lower() if ch.isalnum())
 
     @property
     def resolved_frontend_dist_dir(self) -> Path:

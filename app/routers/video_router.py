@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from app.core.config import get_settings
 from app.core.exceptions import (
@@ -54,6 +54,7 @@ def _to_status_response(job: VideoJob) -> VideoProcessingStatusResponse:
         total_frames=job.total_frames,
         progress_percent=job.progress_percent,
         error=job.error,
+        live=job.live,
         result=job.result,
     )
 
@@ -104,6 +105,36 @@ def get_video_processing_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
+
+
+@router.get(
+    "/{processing_id}/preview",
+    response_class=Response,
+    responses={200: {"content": {"image/jpeg": {}}}},
+)
+def get_live_preview(
+    processing_id: str,
+    service: VideoJobServiceDep,
+) -> Response:
+    """Return the latest annotated frame while the video is processing."""
+    try:
+        image = service.get_preview(processing_id)
+    except ResourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except JobNotReadyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    return Response(
+        content=image,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/{processing_id}/output")

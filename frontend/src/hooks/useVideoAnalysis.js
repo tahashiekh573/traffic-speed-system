@@ -18,6 +18,7 @@ export function useVideoAnalysis(config, { onComplete } = {}) {
   const [progress, setProgress] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
   const activeRun = useRef(0);
 
   // Revoke the local preview URL whenever it changes or the app unmounts.
@@ -34,6 +35,7 @@ export function useVideoAnalysis(config, { onComplete } = {}) {
 
   const resetOutput = () => {
     setProcessedVideoUrl("");
+    setPreviewUrl("");
     setResult(null);
     setProgress(null);
     setError("");
@@ -85,13 +87,18 @@ export function useVideoAnalysis(config, { onComplete } = {}) {
     resetOutput();
     setProgress({
       status: "uploading",
+      upload_percent: 0,
       processed_frames: 0,
       total_frames: 0,
       progress_percent: 0,
     });
 
     try {
-      const job = await trafficApi.uploadVideo(videoFile);
+      const job = await trafficApi.uploadVideo(videoFile, (percent) => {
+        if (isCurrent()) {
+          setProgress((current) => ({ ...current, upload_percent: percent }));
+        }
+      });
       if (!job.processing_id) throw new Error("Backend did not return a processing ID.");
       if (!isCurrent()) return;
       setProgress(job);
@@ -115,6 +122,10 @@ export function useVideoAnalysis(config, { onComplete } = {}) {
         }
 
         setProgress(status);
+
+        if (status.live?.preview_available) {
+          setPreviewUrl(trafficApi.previewUrl(job.processing_id, Date.now()));
+        }
 
         if (status.status === "completed") {
           if (!status.result) throw new Error("Processing completed but no result was returned.");
@@ -143,6 +154,7 @@ export function useVideoAnalysis(config, { onComplete } = {}) {
     videoFile,
     videoUrl,
     processedVideoUrl,
+    previewUrl,
     isProcessing,
     progress,
     result,

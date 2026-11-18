@@ -1985,3 +1985,119 @@
     display: none;
   }
 }
+
+/* Live annotated preview while the backend is processing */
+.live-preview {
+  position: relative;
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(46, 230, 214, 0.3);
+  border-radius: 14px;
+  background: #000;
+}
+
+.live-preview img {
+  width: 100%;
+  display: block;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+}
+
+.live-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.65);
+  color: var(--red);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* Helmet check */
+.pipe-stage.is-off {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+.type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.type-speed {
+  background: var(--red-soft);
+  color: #ff8a95;
+}
+
+.type-helmet {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.helmet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.helmet-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.helmet-card > div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+
+.helmet-card strong {
+  display: block;
+  font-size: 13px;
+}
+
+.helmet-card span {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.helmet-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 10px;
+}
+
+.helmet-card.ok .helmet-icon {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.helmet-card.bad {
+  border-color: rgba(255, 77, 94, 0.35);
+  background: var(--red-soft);
+}
+
+.helmet-card.bad .helmet-icon {
+  background: var(--red-soft);
+  color: var(--red);
+}

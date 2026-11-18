@@ -22,6 +22,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Runs the ONNX helmet model (weights/helmet.onnx).
+helmet = [
+    "onnxruntime"
+]
 dev = [
     "pytest",
     "httpx2",

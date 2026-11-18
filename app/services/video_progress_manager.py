@@ -16,6 +16,8 @@ class VideoJob:
     progress_percent: float = 0.0
     error: str | None = None
     result: dict | None = None
+    live: dict | None = None
+    preview_jpeg: bytes | None = None
 
 
 class VideoProgressManager:

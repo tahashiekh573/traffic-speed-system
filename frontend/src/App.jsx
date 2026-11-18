@@ -1,7 +1,7 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  AlertCircle, ArrowUpRight, Bot, CarFront, CheckCircle2, Cpu, Database,
+  AlertCircle, ArrowUpRight, Bot, CarFront, CheckCircle2, Cpu, Database, HardHat,
   Download, FileVideo, Gauge, LayoutDashboard, LoaderCircle, Radar, ScanLine,
   ShieldAlert, Timer, Upload, Video, Zap,
 } from "lucide-react";
@@ -21,6 +21,7 @@ const NAV = [
   { id: "analysis", label: "Video Analysis", icon: Video },
   { id: "speeds", label: "Speed Board", icon: Gauge },
   { id: "plates", label: "Plate Recognition", icon: ScanLine },
+  { id: "helmets", label: "Helmet Check", icon: HardHat },
   { id: "violations", label: "Violations", icon: ShieldAlert },
 ];
 
@@ -29,6 +30,7 @@ const PIPELINE = [
   { key: "detect", label: "Detect", tech: "YOLOv8", icon: Radar },
   { key: "track", label: "Track", tech: "ByteTrack", icon: CarFront },
   { key: "speed", label: "Speed", tech: "2-line timing", icon: Gauge },
+  { key: "helmet", label: "Helmet", tech: "Helmet model", icon: HardHat },
   { key: "plate", label: "Plate OCR", tech: "EasyOCR", icon: ScanLine },
   { key: "save", label: "Save", tech: "SQLite", icon: Database },
 ];
@@ -66,7 +68,7 @@ export default function App() {
   }, []);
 
   const analysis = useVideoAnalysis(config, { onComplete: refreshStats });
-  const { videoFile, videoUrl, processedVideoUrl, isProcessing, progress, result, error } = analysis;
+  const { videoFile, videoUrl, processedVideoUrl, previewUrl, isProcessing, progress, result, error } = analysis;
 
   // Backend heartbeat; load config + history once it is reachable.
   useEffect(() => {
@@ -130,16 +132,22 @@ export default function App() {
     backendOnline,
   };
 
-  const progressPercent = Math.min(100, Math.max(0, Number(progress?.progress_percent || 0)));
+  const uploading = progress?.status === "uploading";
+  const progressPercent = Math.min(
+    100,
+    Math.max(0, Number((uploading ? progress?.upload_percent : progress?.progress_percent) || 0))
+  );
   const limit = result?.speed_limit_kmh ?? config.speed_limit_kmh;
+  const live = isProcessing ? progress?.live : null;
+  const helmetOn = result ? result.helmet_check_enabled : Boolean(config.helmet_check_available);
 
   const statCards = [
     {
       label: "Vehicles Tracked",
-      value: result ? result.vehicles_tracked : isProcessing ? `${progressPercent.toFixed(0)}%` : "—",
+      value: result ? result.vehicles_tracked : live ? live.vehicles_seen : isProcessing ? `${progressPercent.toFixed(0)}%` : "—",
       note: result
         ? `${result.speed_records?.length || 0} crossed both speed lines`
-        : isProcessing ? "Analysing frames…" : "Waiting for analysis",
+        : live ? "Live count — still counting…" : isProcessing ? "Analysing frames…" : "Waiting for analysis",
       icon: CarFront,
       tone: "cyan",
     },
@@ -153,15 +161,19 @@ export default function App() {
     },
     {
       label: "Plates Identified",
-      value: result ? result.plates_identified : "—",
-      note: result ? "Unique plates read by OCR" : "OCR results appear here",
+      value: result ? result.plates_identified : live ? live.plates : "—",
+      note: result ? "Plates read by OCR" : live ? "Live — plates of speeders" : "OCR results appear here",
       icon: ScanLine,
       tone: "violet",
     },
     {
       label: "Violations",
-      value: result ? result.violations_saved : "—",
-      note: stats ? `${stats.total_violations} saved all-time` : "Overspeeding tickets",
+      value: result ? result.violations_saved : live ? live.violations : "—",
+      note: result
+        ? `${result.overspeed_violations ?? 0} overspeed · ${result.no_helmet_violations ?? 0} no helmet`
+        : live
+          ? `Live · ${live.no_helmet ?? 0} without helmet`
+          : stats ? `${stats.total_violations} saved all-time` : "Overspeed + no-helmet tickets",
       icon: ShieldAlert,
       tone: "red",
     },
@@ -376,7 +388,11 @@ export default function App() {
                 <div className="progress-head">
                   <strong>
                     <LoaderCircle size={15} className="spin-icon" />
-                    {progress.status === "uploading" ? "Uploading video…" : progress.status === "queued" ? "Queued…" : "Processing frames…"}
+                    {uploading
+                      ? "Uploading video…"
+                      : progress.status === "queued"
+                        ? "Waiting for the previous video…"
+                        : "AI is analysing frames…"}
                   </strong>
                   <b>{progressPercent.toFixed(1)}%</b>
                 </div>
@@ -384,9 +400,24 @@ export default function App() {
                   <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
                 </div>
                 <div className="progress-foot">
-                  <span>Frames {progress.processed_frames || 0} / {progress.total_frames || "—"}</span>
-                  <span>Live progress</span>
+                  <span>
+                    {uploading
+                      ? `${(videoFile.size / (1024 * 1024)).toFixed(1)} MB`
+                      : `Frames ${progress.processed_frames || 0} / ${progress.total_frames || "—"}`}
+                  </span>
+                  <span>
+                    {live
+                      ? `${live.vehicles_seen} vehicles · ${live.violations} violations${live.no_helmet ? ` · ${live.no_helmet} no helmet` : ""}`
+                      : "Live progress"}
+                  </span>
                 </div>
+              </div>
+            )}
+
+            {isProcessing && previewUrl && (
+              <div className="live-preview">
+                <span className="live-badge"><span className="status-dot" /> LIVE AI VIEW</span>
+                <img src={previewUrl} alt="Latest annotated frame from the running analysis" />
               </div>
             )}
 
@@ -427,13 +458,14 @@ export default function App() {
             <ol className="pipeline">
               {PIPELINE.map((stage, index) => {
                 const Icon = stage.icon;
-                const state = stageState(index, progress, result, error);
+                const helmetOff = stage.key === "helmet" && !helmetOn;
+                const state = helmetOff ? "off" : stageState(index, progress, result, error);
                 return (
                   <li key={stage.key} className={`pipe-stage is-${state}`}>
                     <div className="pipe-icon"><Icon size={16} /></div>
                     <div className="pipe-text">
                       <strong>{stage.label}</strong>
-                      <span>{stage.tech}</span>
+                      <span>{helmetOff ? "off · see Helmet Check" : stage.tech}</span>
                     </div>
                     <div className="pipe-state">
                       {state === "done" ? <CheckCircle2 size={15} /> : state === "active" ? <LoaderCircle size={15} className="spin-icon" /> : state === "error" ? <AlertCircle size={15} /> : null}
@@ -474,7 +506,11 @@ export default function App() {
           </section>
         )}
 
-        <ResultsPanel result={result} isProcessing={isProcessing} />
+        <ResultsPanel
+          result={result}
+          isProcessing={isProcessing}
+          helmetAvailable={Boolean(config.helmet_check_available)}
+        />
 
         <footer className="page-footer">
           <span><span className="status-dot" /> RAFTAAR SYSTEM {backendOnline === false ? "OFFLINE" : "ONLINE"}</span>
